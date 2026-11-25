@@ -32,3 +32,14 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# outbound-smtp
+/outbound-smtp
+/dist/
+*.db
+*.db-wal
+*.db-shm
+/data/
+*.pem
+*.key
+coverage.out
