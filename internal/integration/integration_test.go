@@ -74,7 +74,7 @@ func TestEndToEnd(t *testing.T) {
 		Hostname: "relay.example.com", Listen465: "127.0.0.1:0", Listen587: "127.0.0.1:0",
 		TLSCertFile: certFile, TLSKeyFile: keyFile, DataDir: dir,
 		MaxMessageSize: 1 << 20, MaxRecipients: 10, QueueMaxAge: 72 * time.Hour,
-		DeliveryConcurrency: 4, DeliveryConcurrencyPerDomain: 2, MaxConnectionsPerIP: 10,
+		DeliveryConcurrency: 4, DeliveryConcurrencyPerDomain: 2, MaxConnections: 100, MaxConnectionsPerIP: 10,
 		RateLimitUserPerHour: 100, RateLimitNetworkPerHour: 100, AuthFailureLimit: 5,
 	}
 	st, err := store.Open(dir)

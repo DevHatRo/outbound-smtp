@@ -228,7 +228,7 @@ func (a *app) sendTest(st *store.Store, args []string) error {
 		"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"+
 		"This is a test message from outbound-smtp, queued at %s with queue ID %s.\r\n"+
 		"If it arrived, check that the receiving server reports dkim=pass for %s.\r\n",
-		*from, *to, id, now.Format("Mon, 02 Jan 2006 15:04:05 -0700"), strings.ToLower(id), host, now.UTC().Format(time.RFC3339), id, domain)
+		*from, *to, id, now.Format(time.RFC1123Z), strings.ToLower(id), host, now.UTC().Format(time.RFC3339), id, domain)
 	signed, err := dkim.Signer{Store: st}.Sign(domain, []byte(msg))
 	if err != nil {
 		return fmt.Errorf("%w (run 'dkim generate %s' first)", err, domain)

@@ -54,7 +54,7 @@ func prepare(raw []byte, queueID, hostname, with string, now time.Time) (out []b
 	}
 
 	header, body := splitMessage(raw)
-	date := now.Format("Mon, 02 Jan 2006 15:04:05 -0700")
+	date := now.Format(time.RFC1123Z)
 	var b bytes.Buffer
 	b.WriteString(config.ReceivedHeader(hostname, with, queueID, now))
 	// Blind-copy fields never leave the relay. An empty Date or Message-ID is

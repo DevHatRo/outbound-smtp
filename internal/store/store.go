@@ -528,10 +528,24 @@ func withMessage(db *gorm.DB) *gorm.DB {
 }
 
 // DueRecipients returns recipients whose next attempt is due, oldest first.
-func (s *Store) DueRecipients(now time.Time, limit int) ([]Recipient, error) {
+// It leaves out the destination domains in skipDomains and the
+// (message ID, domain) groups in skipGroups: what the scheduler cannot start
+// now must not fill the page and hide everything behind it.
+func (s *Store) DueRecipients(now time.Time, limit int, skipDomains []string, skipGroups [][2]string) ([]Recipient, error) {
+	q := withMessage(s.db).Where("next_attempt_at <= ?", now.Unix())
+	if len(skipDomains) > 0 {
+		q = q.Where("domain NOT IN ?", skipDomains)
+	}
+	if len(skipGroups) > 0 {
+		// SQLite takes a row value on the left of IN only with a subquery on the right.
+		args := make([]any, 0, 2*len(skipGroups))
+		for _, g := range skipGroups {
+			args = append(args, g[0], g[1])
+		}
+		q = q.Where("(message_id, domain) NOT IN (VALUES "+strings.TrimSuffix(strings.Repeat("(?,?),", len(skipGroups)), ",")+")", args...)
+	}
 	var out []Recipient
-	err := withMessage(s.db).Where("next_attempt_at <= ?", now.Unix()).Order("next_attempt_at, id").Limit(limit).Find(&out).Error
-	return out, err
+	return out, q.Order("next_attempt_at, id").Limit(limit).Find(&out).Error
 }
 
 // ListRecipients returns the queue; messageID "" means everything.

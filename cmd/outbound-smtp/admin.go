@@ -38,11 +38,15 @@ func rateText(r *int) string {
 	return fmt.Sprintf("%d/h", *r)
 }
 
-func rateFlag(n int) *int {
-	if n <= 0 {
-		return nil
+// rateFlag turns --rate into the stored override; 0 means the global default.
+func rateFlag(n int) (*int, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("--rate %d: want a positive number, or 0 for the global default", n)
 	}
-	return &n
+	if n == 0 {
+		return nil, nil
+	}
+	return &n, nil
 }
 
 // ---- domain ----
@@ -104,7 +108,7 @@ func (a *app) user(st *store.Store, args []string) error {
 	fs := flag.NewFlagSet("user", flag.ContinueOnError)
 	var allow list
 	fs.Var(&allow, "allow", "restrict the user to this sender domain or address (repeatable)")
-	rate := fs.Int("rate", 0, "messages per hour (0 = global default)")
+	rate := fs.Int("rate", 0, "recipients per hour (0 = global default)")
 	fromStdin := fs.Bool("password-stdin", false, "read the password from the first line of stdin")
 	generate := fs.Bool("generate", false, "generate a random password and print it once")
 	verb, pos, err := a.sub("user", fs, args, map[string]int{"add": 1, "list": 0, "remove": 1, "passwd": 1})
@@ -134,6 +138,15 @@ func (a *app) user(st *store.Store, args []string) error {
 	if username == "" || strings.ContainsAny(username, " \t\r\n\x00") {
 		return fmt.Errorf("invalid username %q", username)
 	}
+	// Accepting these and changing only the password would leave the operator
+	// believing the user is now restricted.
+	if verb == "passwd" && (len(allow) > 0 || *rate != 0) {
+		return errors.New("user passwd only changes the password: --allow and --rate are set by 'user add' (remove and add the user to change them)")
+	}
+	userRate, err := rateFlag(*rate)
+	if err != nil {
+		return err
+	}
 	var senders []string
 	for _, p := range allow {
 		norm, err := senderPattern(p)
@@ -162,7 +175,7 @@ func (a *app) user(st *store.Store, args []string) error {
 	if verb == "passwd" {
 		err = st.SetPassword(username, hash)
 	} else {
-		err = st.AddUser(username, hash, rateFlag(*rate), senders)
+		err = st.AddUser(username, hash, userRate, senders)
 	}
 	if err != nil {
 		return fmt.Errorf("user %s: %w", username, err)
@@ -256,7 +269,7 @@ func (a *app) network(st *store.Store, args []string) error {
 	fs := flag.NewFlagSet("network", flag.ContinueOnError)
 	var domains list
 	fs.Var(&domains, "domain", "restrict the network to this sending domain (repeatable)")
-	rate := fs.Int("rate", 0, "messages per hour (0 = global default)")
+	rate := fs.Int("rate", 0, "recipients per hour (0 = global default)")
 	verb, pos, err := a.sub("network", fs, args, map[string]int{"add": 1, "list": 0, "remove": 1})
 	if err != nil {
 		return err
@@ -291,7 +304,11 @@ func (a *app) network(st *store.Store, args []string) error {
 		}
 		names = append(names, name)
 	}
-	if err := st.AddNetwork(cidr, rateFlag(*rate), names); err != nil {
+	netRate, err := rateFlag(*rate)
+	if err != nil {
+		return err
+	}
+	if err := st.AddNetwork(cidr, netRate, names); err != nil {
 		return fmt.Errorf("network %s: %w", cidr, err)
 	}
 	fmt.Fprintf(a.out, "trusted network %s: clients in it relay WITHOUT authentication\n", cidr)

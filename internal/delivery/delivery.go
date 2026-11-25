@@ -5,13 +5,17 @@ package delivery
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/smtp"
 	"net/textproto"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -60,13 +64,59 @@ type Client struct {
 	StepTimeout time.Duration
 	// DataTimeout bounds sending the message and waiting for the final reply.
 	DataTimeout time.Duration
+	// RootCAs verifies the smarthost certificate; nil means the system roots.
+	RootCAs *x509.CertPool
 }
 
 // New returns a client using the system resolver.
 func New(cfg *config.Config) *Client {
 	d := &net.Dialer{Timeout: 30 * time.Second}
+	if cfg.SmarthostHost == "" {
+		// A smarthost is the operator's choice and may well be local; an
+		// address taken from someone else's DNS is not.
+		d.Control = refuseLocal
+	}
 	return &Client{cfg: cfg, Resolver: net.DefaultResolver, Dial: d.DialContext, Port: "25",
 		StepTimeout: 2 * time.Minute, DataTimeout: 10 * time.Minute}
+}
+
+// refuseLocal is the dialer's Control function for direct delivery. It runs
+// after name resolution, on the address actually being connected to, and
+// refuses the ones no recipient domain's mail server can have: a domain
+// whose MX points there would make the relay talk to itself or to services
+// on its own host. Private ranges stay reachable for internal mail servers.
+func refuseLocal(_, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("unexpected dial address %q: %w", address, err)
+	}
+	ip := ap.Addr().Unmap()
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+		return fmt.Errorf("%s is not an address a mail server for another domain can have, not connecting", ip)
+	}
+	return nil
+}
+
+// loginAuth is AUTH LOGIN, which net/smtp leaves out and some providers
+// offer as their only mechanism. Like smtp.PlainAuth it sends the password
+// as it is; session only uses it over verified TLS.
+type loginAuth struct{ username, password string }
+
+func (a loginAuth) Start(*smtp.ServerInfo) (proto string, toServer []byte, err error) {
+	return "LOGIN", nil, nil
+}
+
+func (a loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if !more {
+		return nil, nil
+	}
+	switch strings.ToLower(strings.TrimSuffix(strings.TrimSpace(string(fromServer)), ":")) {
+	case "username":
+		return []byte(a.username), nil
+	case "password":
+		return []byte(a.password), nil
+	}
+	return nil, errors.New("unexpected AUTH LOGIN challenge")
 }
 
 // errTLS marks a failed opportunistic STARTTLS, after which the same host is
@@ -108,9 +158,9 @@ func (c *Client) Deliver(ctx context.Context, msg store.Message, domain string, 
 				return results
 			}
 			lastErr, lastHost = err, host
-			// Plaintext fallback only for opportunistic TLS; a smarthost with
-			// credentials never downgrades.
-			if !errors.Is(err, errTLS) || (smarthost && c.cfg.SmarthostUsername != "") {
+			// Plaintext fallback only for opportunistic TLS between MTAs; a
+			// smarthost never downgrades.
+			if !errors.Is(err, errTLS) || smarthost {
 				break
 			}
 		}
@@ -173,11 +223,12 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 	defer stop()
 
 	withCreds := smarthost && c.cfg.SmarthostUsername != ""
-	tlsCfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
-	if !withCreds {
+	tlsCfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: c.RootCAs}
+	if !smarthost {
 		// Opportunistic TLS, as MTAs do between each other: most MX certificates
 		// cannot be validated against the recipient domain, and the alternative
-		// is plaintext. Credentials are never sent over such a connection.
+		// is plaintext. A smarthost is different: the operator named it, all
+		// mail and possibly credentials go through it, so it must prove who it is.
 		tlsCfg.InsecureSkipVerify = true //nolint:gosec // see comment above
 	}
 
@@ -203,14 +254,18 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 			if err := cl.StartTLS(tlsCfg); err != nil {
 				return nil, fmt.Errorf("%w with %s: %w", errTLS, host, err)
 			}
-		case withCreds:
-			return nil, fmt.Errorf("smarthost %s does not offer STARTTLS; refusing to send credentials in plaintext", host)
+		case smarthost:
+			return nil, fmt.Errorf("smarthost %s does not offer STARTTLS; refusing to send in plaintext", host)
 		}
 	}
 	_, usedTLS := cl.TLSConnectionState()
 	if withCreds {
 		// PlainAuth itself also refuses to run without TLS.
-		if err := cl.Auth(smtp.PlainAuth("", c.cfg.SmarthostUsername, c.cfg.SmarthostPassword, host)); err != nil {
+		auth := smtp.PlainAuth("", c.cfg.SmarthostUsername, c.cfg.SmarthostPassword, host)
+		if _, mechs := cl.Extension("AUTH"); usedTLS && !slices.Contains(strings.Fields(mechs), "PLAIN") && slices.Contains(strings.Fields(mechs), "LOGIN") {
+			auth = loginAuth{c.cfg.SmarthostUsername, c.cfg.SmarthostPassword}
+		}
+		if err := cl.Auth(auth); err != nil {
 			return nil, fmt.Errorf("smarthost authentication at %s: %w", host, err)
 		}
 	}
@@ -230,10 +285,11 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 
 	step(c.StepTimeout)
 	if err := cl.Mail(msg.EnvelopeFrom); err != nil {
-		// 421 is the server closing the session, not a verdict on this
-		// message: let the caller try the next MX.
+		// 421 is the server closing the session, and an error that is no
+		// SMTP reply at all is the connection failing. Neither is a verdict
+		// on this message: let the caller try the next MX.
 		var pe *textproto.Error
-		if errors.As(err, &pe) && pe.Code == 421 {
+		if !errors.As(err, &pe) || pe.Code == 421 {
 			return nil, fmt.Errorf("MAIL at %s: %w", host, err)
 		}
 		setAll(err, nil)

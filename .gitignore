@@ -44,6 +44,9 @@ go.work.sum
 *.key
 coverage.out
 
+# Audit reports are local only
+/.audit/
+
 # Claude Code configuration is local only
 /.claude/
 /CLAUDE.md

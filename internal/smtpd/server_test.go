@@ -61,7 +61,7 @@ func start(t *testing.T, tweak func(*config.Config)) *env {
 		Hostname: "relay.example.com", EnablePort25: true, Port25StartTLS: true,
 		Listen465: "127.0.0.1:0", Listen587: "127.0.0.1:0", Listen25: "127.0.0.1:0",
 		TLSCertFile: certFile, TLSKeyFile: keyFile,
-		MaxMessageSize: 1 << 20, MaxRecipients: 10, MaxConnectionsPerIP: 50,
+		MaxMessageSize: 1 << 20, MaxRecipients: 10, MaxConnections: 100, MaxConnectionsPerIP: 50,
 		RateLimitUserPerHour: 1000, RateLimitNetworkPerHour: 1000, AuthFailureLimit: 3,
 	}
 	if tweak != nil {
@@ -247,6 +247,74 @@ func TestNeverAnOpenRelay(t *testing.T) {
 		wantCode(t, "DATA", send(c, "only@example.com", "rcpt@example.org", msg), 550)
 	})
 
+	t.Run("user removed while the session is open", func(t *testing.T) {
+		hash, err := password.Hash(goodPassword)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.AddUser("leaver", hash, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		c := e.dial(Listener465, false)
+		auth(c, "leaver")
+		if err := e.st.RemoveUser("leaver"); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, "MAIL", c.Mail("app@example.com", nil), 530)
+	})
+	t.Run("user restricted while the session is open", func(t *testing.T) {
+		hash, err := password.Hash(goodPassword)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.AddUser("mover", hash, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		c := e.dial(Listener465, false)
+		auth(c, "mover")
+		if err := errors.Join(e.st.RemoveUser("mover"), e.st.AddUser("mover", hash, nil, []string{"only@example.com"})); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, "MAIL", c.Mail("app@example.com", nil), 550)
+	})
+
+	loopback := netip.MustParsePrefix("127.0.0.0/8")
+	t.Run("network removed while the session is open", func(t *testing.T) {
+		e.trustLoopback()
+		c := e.dial(Listener25, false)
+		if err := e.st.RemoveNetwork(loopback); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, "MAIL", c.Mail("app@example.com", nil), 550)
+	})
+	t.Run("network restricted while the session is open", func(t *testing.T) {
+		e.trustLoopback()
+		c := e.dial(Listener25, false)
+		if err := e.st.RemoveNetwork(loopback); err != nil {
+			t.Fatal(err)
+		}
+		e.trustLoopback("example.net")
+		defer e.st.RemoveNetwork(loopback) //nolint:errcheck // the later subtests must not find it
+		wantCode(t, "MAIL", c.Mail("app@example.com", nil), 550)
+	})
+	t.Run("removed user keeps only what the network allows", func(t *testing.T) {
+		hash, err := password.Hash(goodPassword)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.AddUser("guest", hash, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		c := e.dial(Listener465, false)
+		auth(c, "guest")
+		e.trustLoopback("example.net")
+		defer e.st.RemoveNetwork(loopback) //nolint:errcheck // must not outlive the subtest
+		if err := e.st.RemoveUser("guest"); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, "MAIL", c.Mail("app@example.com", nil), 550)
+	})
+
 	if q := e.queued(); len(q) != 0 {
 		t.Fatalf("open relay: %d recipient(s) were queued: %+v", len(q), q)
 	}
@@ -387,16 +455,24 @@ func TestLimits(t *testing.T) {
 		wantCode(t, "oversized", send(c, "app@example.com", "rcpt@example.org", big), 552)
 		_ = c.Close()
 	})
-	t.Run("message rate", func(t *testing.T) {
+	t.Run("recipient rate", func(t *testing.T) {
 		c := e.dial(Listener465, false)
 		if err := c.Auth(sasl.NewPlainClient("", "app", goodPassword)); err != nil {
 			t.Fatal(err)
 		}
-		// The oversized attempt above already used one of the two tokens.
-		if err := send(c, "app@example.com", "rcpt@example.org", goodMessage); err != nil {
+		// The limit counts recipients. The oversized attempt above already
+		// used one of the two tokens, so one message with two recipients
+		// gets only the first through.
+		if err := c.Mail("app@example.com", nil); err != nil {
 			t.Fatal(err)
 		}
-		wantCode(t, "over the rate", c.Mail("app@example.com", nil), 451)
+		if err := c.Rcpt("one@example.org", nil); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, "over the rate", c.Rcpt("two@example.org", nil), 451)
+		if n := testutil.ToFloat64(e.m.Rejected.WithLabelValues(metrics.ReasonRateLimit)); n != 1 {
+			t.Errorf("rate_limit rejections = %v, want 1", n)
+		}
 		_ = c.Close()
 	})
 	t.Run("connections per address", func(t *testing.T) {
@@ -491,7 +567,7 @@ func TestStartFailureLeavesNothingListening(t *testing.T) {
 	}
 	defer st.Close()
 	cfg := &config.Config{Hostname: "relay.example.com", Listen465: freeAddr, Listen587: taken.Addr().String(),
-		TLSCertFile: certFile, TLSKeyFile: keyFile, MaxConnectionsPerIP: 5}
+		TLSCertFile: certFile, TLSKeyFile: keyFile, MaxConnections: 100, MaxConnectionsPerIP: 5}
 	srv, err := New(cfg, st, fakeSigner{}, zap.NewNop(), metrics.New("test"), func() {})
 	if err != nil {
 		t.Fatal(err)
@@ -595,6 +671,37 @@ func TestPrepare(t *testing.T) {
 	loop := bytes.Repeat([]byte("Received: x\r\n"), maxReceived+1)
 	if _, _, _, err := prepare(append(loop, "From: a@example.com\r\n\r\n"...), "Q", "h", "ESMTP", now); !errors.Is(err, errBadMessage) {
 		t.Errorf("mail loop: got %v", err)
+	}
+}
+
+func TestTotalConnectionLimit(t *testing.T) {
+	e := start(t, func(c *config.Config) { c.MaxConnections = 1 })
+	first := e.dial(Listener587, false)
+	c, err := net.Dial("tcp", e.srv.Addr(Listener25).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close() //nolint:errcheck // test connection
+	buf := make([]byte, 4)
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "421 " {
+		t.Fatalf("second connection got %q, %v; want 421", buf, err)
+	}
+	_ = first.Close()
+}
+
+// An IPv6 client is counted by its /64, not by each address it can pick.
+func TestLimitKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"192.0.2.7":           "192.0.2.7",
+		"::ffff:192.0.2.7":    "192.0.2.7",
+		"2001:db8:1:2:3::4":   "2001:db8:1:2::",
+		"2001:db8:1:2:ffff::": "2001:db8:1:2::",
+		"2001:db8:1:3::1":     "2001:db8:1:3::",
+	} {
+		if got := limitKey(netip.MustParseAddr(in)).String(); got != want {
+			t.Errorf("limitKey(%s) = %s, want %s", in, got, want)
+		}
 	}
 }
 

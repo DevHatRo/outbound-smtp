@@ -41,15 +41,60 @@ func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	if _, sess.tls = c.TLSConnectionState(); sess.tls {
 		markTLS(c.Conn())
 	}
-	nets, err := b.s.st.ListNetworks()
-	if err != nil {
-		b.s.log.Error("load trusted networks", zap.Error(err))
-		return nil, errTemporary
-	}
-	if n := matchNetwork(nets, sess.ip); n != nil {
-		sess.who = &principal{source: store.SourceNetwork, ident: n.CIDR, patterns: n.DomainNames(), rate: n.RatePerHour}
+	var err error
+	if sess.who, err = b.s.networkPrincipal(sess.ip); err != nil {
+		return nil, err
 	}
 	return sess, nil
+}
+
+// networkPrincipal returns the trusted network ip belongs to, or nil.
+func (s *Server) networkPrincipal(ip netip.Addr) (*principal, error) {
+	nets, err := s.st.ListNetworks()
+	if err != nil {
+		s.log.Error("load trusted networks", zap.Error(err))
+		return nil, errTemporary
+	}
+	if n := matchNetwork(nets, ip); n != nil {
+		return &principal{source: store.SourceNetwork, ident: n.CIDR, patterns: n.DomainNames(), rate: n.RatePerHour}, nil
+	}
+	return nil, nil
+}
+
+func userPrincipal(u store.User) *principal {
+	return &principal{source: store.SourceAuth, ident: u.Username, patterns: u.SenderPatterns(), rate: u.RatePerHour}
+}
+
+// refresh re-reads the session's principal, so that removing or restricting
+// a user or a network through the CLI also applies to sessions that are
+// already open. A removed user is left with what the client address allows.
+func (s *session) refresh() (*principal, error) {
+	who := s.who
+	if who == nil {
+		return nil, nil
+	}
+	if who.source == store.SourceAuth {
+		u, err := s.s.st.GetUser(who.ident)
+		if err == nil {
+			return userPrincipal(u), nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			s.s.log.Error("load user", zap.Error(err))
+			return nil, errTemporary
+		}
+	}
+	return s.s.networkPrincipal(s.ip)
+}
+
+// rateLimit is the principal's recipients-per-hour limit.
+func (s *session) rateLimit(who *principal) int {
+	if who.rate != nil {
+		return *who.rate
+	}
+	if who.source == store.SourceNetwork {
+		return s.s.cfg.RateLimitNetworkPerHour
+	}
+	return s.s.cfg.RateLimitUserPerHour
 }
 
 // session is one SMTP session. who stays nil until the client is known to be
@@ -127,7 +172,7 @@ func (l *loginServer) Next(response []byte) (challenge []byte, done bool, err er
 
 func (s *session) authenticate(username, pw string) error {
 	srv := s.s
-	key, limit := s.ip.String(), srv.cfg.AuthFailureLimit
+	key, limit := limitKey(s.ip).String(), srv.cfg.AuthFailureLimit
 	finish, ok := srv.authFail.begin(key, limit)
 	if !ok {
 		srv.m.AuthAttempts.WithLabelValues("blocked").Inc()
@@ -155,7 +200,7 @@ func (s *session) authenticate(username, pw string) error {
 	}
 	finish(false)
 	srv.m.AuthAttempts.WithLabelValues("success").Inc()
-	s.who = &principal{source: store.SourceAuth, ident: u.Username, patterns: u.SenderPatterns(), rate: u.RatePerHour}
+	s.who = userPrincipal(u)
 	return nil
 }
 
@@ -204,10 +249,16 @@ func (s *session) checkSender(who *principal, what, addr, sender string) error {
 }
 
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
-	who := s.who
 	if s.listener == Listener587 && !s.tls {
 		return s.reject(metrics.ReasonRelayDenied, from, smtpErr(530, smtp.EnhancedCode{5, 7, 0}, "Must issue a STARTTLS command first"))
 	}
+	who, err := s.refresh()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.who = who
+	s.mu.Unlock()
 	if who == nil {
 		if s.listener == Listener25 {
 			return s.reject(metrics.ReasonRelayDenied, from, smtpErr(550, smtp.EnhancedCode{5, 7, 1}, "Relay access denied"))
@@ -220,15 +271,9 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	if err := s.checkSender(who, "Sender", from, from); err != nil {
 		return err
 	}
-	limit := s.s.cfg.RateLimitUserPerHour
-	if who.source == store.SourceNetwork {
-		limit = s.s.cfg.RateLimitNetworkPerHour
-	}
-	if who.rate != nil {
-		limit = *who.rate
-	}
-	if !s.s.msgRate.allow(who.source+":"+who.ident, limit) {
-		return s.reject(metrics.ReasonRateLimit, from, smtpErr(451, smtp.EnhancedCode{4, 7, 1}, "Message rate limit exceeded, try again later"))
+	// The form that was checked is the form that is queued and sent on.
+	if local, domain, err := store.SplitAddress(from); err == nil {
+		from = local + "@" + domain
 	}
 	// Only now does the transaction exist: a refused MAIL must not replace
 	// the sender of anything accepted earlier.
@@ -246,6 +291,10 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	}
 	if _, _, err := store.SplitAddress(to); err != nil {
 		return smtpErr(501, smtp.EnhancedCode{5, 1, 3}, "Bad recipient address syntax")
+	}
+	// The limit counts recipients, not messages: one message can carry many.
+	if !s.s.rcptRate.allow(s.who.source+":"+s.who.ident, s.rateLimit(s.who)) {
+		return s.reject(metrics.ReasonRateLimit, s.from, smtpErr(451, smtp.EnhancedCode{4, 7, 1}, "Recipient rate limit exceeded, try again later"))
 	}
 	s.rcpts = append(s.rcpts, to)
 	return nil

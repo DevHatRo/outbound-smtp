@@ -26,12 +26,16 @@ const (
 	Ed25519 = "ed25519" // smaller and faster, but not verified everywhere yet
 )
 
-// signedHeaders follows RFC 6376 section 5.4.1. Fields that are absent are
-// still listed, which stops anyone adding them to a signed message later.
+// signedHeaders follows RFC 6376 section 5.4.1. A name listed once more than
+// the field occurs is signed as absent, which stops anyone adding an instance
+// to a signed message later. Every name is listed once, so fields that are
+// missing are protected; the fields a reader sees are listed twice, so a
+// second From or Subject in front of the real one breaks the signature too.
 var signedHeaders = []string{
 	"From", "Sender", "Reply-To", "To", "Cc", "Subject", "Date", "Message-ID",
 	"In-Reply-To", "References", "MIME-Version", "Content-Type", "Content-Transfer-Encoding",
 	"List-Id", "List-Unsubscribe", "List-Unsubscribe-Post",
+	"From", "Reply-To", "To", "Cc", "Subject", "Date", "Message-ID",
 }
 
 // Generate creates a private key and returns it as PKCS#8 DER.

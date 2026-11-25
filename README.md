@@ -149,10 +149,11 @@ SQLite; CLI changes take effect without a restart.
 | `SMARTHOST_PORT` | `587` | Smarthost port. 465 uses implicit TLS, others STARTTLS. |
 | `SMARTHOST_USERNAME` | *(unset)* | Smarthost AUTH username. |
 | `SMARTHOST_PASSWORD` | *(unset)* | Smarthost AUTH password. |
-| `MAX_CONNECTIONS_PER_IP` | `10` | Simultaneous connections per client IP. |
-| `RATE_LIMIT_USER_PER_HOUR` | `1000` | Messages per hour per user, unless `user add --rate` overrides it. |
-| `RATE_LIMIT_NETWORK_PER_HOUR` | `1000` | Messages per hour per trusted network, unless `network add --rate` overrides it. |
-| `AUTH_FAILURE_LIMIT` | `5` | Failed logins per client IP per 10 minutes before AUTH is refused. |
+| `MAX_CONNECTIONS` | `1000` | Simultaneous client connections on all listeners together. |
+| `MAX_CONNECTIONS_PER_IP` | `10` | Simultaneous connections per client address (IPv4 address or IPv6 /64). |
+| `RATE_LIMIT_USER_PER_HOUR` | `1000` | Recipients per hour per user, unless `user add --rate` overrides it. |
+| `RATE_LIMIT_NETWORK_PER_HOUR` | `1000` | Recipients per hour per trusted network, unless `network add --rate` overrides it. |
+| `AUTH_FAILURE_LIMIT` | `5` | Failed logins per client address (IPv4 address or IPv6 /64) per 10 minutes before AUTH is refused. |
 | `METRICS_LISTEN` | `:9090` | HTTP listener for `/metrics` and `/healthz`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `LOG_RECIPIENTS` | `false` | Also log full recipient addresses (`recipient` on delivery lines, `recipient_addresses` on accepted lines). |
@@ -164,10 +165,20 @@ Notes:
   changing. If the new files are invalid, the previous certificate stays.
 - The DNS-01 providers read further optional variables (TTL, propagation
   timeout); see the [lego DNS provider documentation](https://go-acme.github.io/lego/dns/).
-- Rate limits are token buckets: a client may send its hourly amount in a
-  burst and then refills evenly. Counters are in memory and reset on restart.
-- With smarthost credentials set, TLS with a verified certificate is
-  mandatory and the relay never falls back to plaintext.
+- Rate limits count recipients, not messages: a message to 20 recipients
+  uses 20. They are token buckets: a client may send its hourly amount in a
+  burst and then refills evenly, so the first hour can carry up to twice the
+  limit. A recipient over the limit gets a 451 and can be retried. Counters
+  are in memory and reset on restart.
+- A smarthost must offer TLS with a certificate that is valid for
+  `SMARTHOST_HOST`, with or without credentials; the relay never falls back
+  to plaintext. Authentication uses `PLAIN`, or `LOGIN` where that is all the
+  smarthost offers.
+- Without a smarthost, the relay does not connect to loopback or link-local
+  addresses, whatever the recipient domain's DNS says. Private ranges are
+  allowed, so internal mail servers can be reached by MX.
+- Removing or restricting a user or network applies to open sessions from
+  their next message on.
 - On `SIGTERM` the daemon stops accepting, gives open sessions and running
   deliveries 30 seconds, and exits. Queued mail survives restarts.
 
@@ -256,7 +267,7 @@ before or after arguments.
 | `dkim verify <domain> [--selector s]` | Check by DNS lookup that the published record matches the key. |
 | `dkim rotate <domain> [--selector s] [--algorithm a] [--force]` | Rotate keys; see below. |
 | `user add <name> [--allow domain-or-address]... [--rate N]` | Create a user. The password is prompted for, read with `--password-stdin`, or created with `--generate`. Minimum 12 characters. |
-| `user passwd <name>` | Change a password (same password options). |
+| `user passwd <name>` | Change a password (same password options). It changes nothing else: to change `--allow` or `--rate`, remove and add the user. |
 | `user list`, `user remove <name>` | List or delete users. |
 | `network add <cidr> [--domain d]... [--rate N]` | Trust a network. |
 | `network list`, `network remove <cidr>` | List or delete trusted networks. |

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -72,6 +73,7 @@ type Queue struct {
 	mu        sync.Mutex
 	inFlight  map[string]bool // message ID + destination domain
 	perDomain map[string]int
+	pending   map[recipientKey]func() error // outcome writes that failed, see save
 }
 
 // New creates the scheduler.
@@ -87,6 +89,7 @@ func New(cfg *config.Config, st *store.Store, dl Deliverer, signer Signer, log *
 		sem:            make(chan struct{}, cfg.DeliveryConcurrency),
 		inFlight:       map[string]bool{},
 		perDomain:      map[string]int{},
+		pending:        map[recipientKey]func() error{},
 	}
 }
 
@@ -104,6 +107,9 @@ func (q *Queue) Run(ctx context.Context) {
 	// Polling also picks up what the CLI writes (send-test, queue retry).
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
+	// On the way out, one more try for the outcomes that could not be
+	// written: after a restart they would be delivered again.
+	defer q.flush()
 	for {
 		// Checked before every pass: select picks at random among ready cases,
 		// so a wake-up from a finishing attempt could otherwise start new
@@ -129,15 +135,83 @@ type group struct {
 	rcpts     []store.Recipient
 }
 
+// duePage is how many due recipients one scheduler pass reads.
+const duePage = 1000
+
+// recipientKey identifies a recipient row. The message ID is part of it
+// because SQLite can reuse a row ID after "queue delete".
+type recipientKey struct {
+	id        int64
+	messageID string
+}
+
+func keyOf(r store.Recipient) recipientKey { return recipientKey{r.ID, r.MessageID} }
+
+// save runs the queue write that records a recipient's outcome. The outcome
+// is already decided (the remote server has answered), so a write that fails
+// is kept and retried by dispatch and when Run stops; the delivery itself is
+// never repeated because of it. Memory only: if the daemon exits while the
+// write still fails, the recipient is tried again after the restart.
+func (q *Queue) save(r store.Recipient, what string, write func() error) {
+	if err := write(); err != nil {
+		q.log.Error(what+" failed, the write will be retried", zap.String("queue_id", r.MessageID), zap.Error(err))
+		q.mu.Lock()
+		q.pending[keyOf(r)] = write
+		q.mu.Unlock()
+	}
+}
+
+// flush retries the writes that failed earlier and reports whether none is left.
+func (q *Queue) flush() bool {
+	q.mu.Lock()
+	pending := maps.Clone(q.pending)
+	q.mu.Unlock()
+	for k, write := range pending {
+		if err := write(); err != nil {
+			q.log.Error("queue database is not writable, deliveries are paused", zap.Int("pending_writes", len(pending)), zap.Error(err))
+			return false
+		}
+		q.mu.Lock()
+		delete(q.pending, k)
+		q.mu.Unlock()
+	}
+	return true
+}
+
 // dispatch starts an attempt for every due group that fits the limits.
 func (q *Queue) dispatch() {
-	// ponytail: one page of 1000 due rows; a single huge blocked destination can
-	// delay others until its rows are deferred. Page per domain if that shows up.
-	due, err := q.st.DueRecipients(q.Now(), 1000)
-	if err != nil {
-		q.log.Error("read queue", zap.Error(err))
+	// While outcomes cannot be recorded, starting more deliveries would only
+	// produce more outcomes that cannot be recorded.
+	if !q.flush() {
 		return
 	}
+	for q.dispatchPage() {
+	}
+}
+
+// dispatchPage reads one page of due recipients and starts what fits. It
+// reports whether another page may hold more work: this one was full, and
+// what it could not start is left out of the next.
+func (q *Queue) dispatchPage() bool {
+	var busyDomains []string
+	var busyGroups [][2]string
+	q.mu.Lock()
+	for d, n := range q.perDomain {
+		if n >= q.cfg.DeliveryConcurrencyPerDomain {
+			busyDomains = append(busyDomains, d)
+		}
+	}
+	for key := range q.inFlight {
+		id, domain, _ := strings.Cut(key, "\x00")
+		busyGroups = append(busyGroups, [2]string{id, domain})
+	}
+	q.mu.Unlock()
+	due, err := q.st.DueRecipients(q.Now(), duePage, busyDomains, busyGroups)
+	if err != nil {
+		q.log.Error("read queue", zap.Error(err))
+		return false
+	}
+	admitted := 0
 	var groups []*group
 	index := map[string]*group{}
 	for _, r := range due {
@@ -161,8 +235,9 @@ func (q *Queue) dispatch() {
 		select {
 		case q.sem <- struct{}{}:
 		default:
-			return // global limit reached; finishing attempts wake us
+			return false // global limit reached; finishing attempts wake us
 		}
+		admitted++
 		q.mu.Lock()
 		q.inFlight[key] = true
 		q.perDomain[g.domain]++
@@ -183,6 +258,7 @@ func (q *Queue) dispatch() {
 			q.attempt(g)
 		}()
 	}
+	return len(due) == duePage && admitted > 0
 }
 
 // bouncePending prefixes last_error of a recipient whose delivery failed
@@ -212,6 +288,12 @@ func (q *Queue) attempt(g *group) {
 	// The group was read before it was admitted; an attempt that finished in
 	// between has already removed or rescheduled some of its rows. Work only
 	// on what the store says is still due, or mail would be delivered twice.
+	// A recipient with a pending write already has its outcome. The pending
+	// set is read before the rows: a write that flush completes in between
+	// then shows in the rows, whereas the other order could miss both.
+	q.mu.Lock()
+	decided := maps.Clone(q.pending)
+	q.mu.Unlock()
 	current, err := q.st.ListRecipients(g.messageID)
 	if err != nil {
 		q.log.Error("reload recipients", zap.String("queue_id", g.messageID), zap.Error(err))
@@ -219,7 +301,7 @@ func (q *Queue) attempt(g *group) {
 	}
 	var rcpts []store.Recipient
 	for _, r := range current {
-		if r.Domain == g.domain && r.NextAttemptAt <= now.Unix() {
+		if _, ok := decided[keyOf(r)]; !ok && r.Domain == g.domain && r.NextAttemptAt <= now.Unix() {
 			rcpts = append(rcpts, r)
 		}
 	}
@@ -292,18 +374,13 @@ func (q *Queue) attempt(g *group) {
 		switch res.Status {
 		case delivery.Delivered:
 			delivered++
-			if err := q.st.RecipientDone(r); err != nil {
-				// The remote has the message; a duplicate is the cost of not losing it.
-				q.log.Error("mark delivered", zap.String("queue_id", msg.ID), zap.Error(err))
-			}
+			q.save(r, "mark delivered", func() error { return q.st.RecipientDone(r) })
 		case delivery.Deferred:
 			next := done.Add(q.Jitter(Backoff(r.Attempts + 1)))
 			if next.After(expiry) {
 				next = expiry // the next look at this recipient bounces it
 			}
-			if err := q.st.RecipientDefer(r, next, res.Response); err != nil {
-				q.log.Error("defer recipient", zap.String("queue_id", msg.ID), zap.Error(err))
-			}
+			q.save(r, "defer recipient", func() error { return q.st.RecipientDefer(r, next, res.Response) })
 		case delivery.Bounced:
 			failures = append(failures, delivery.Failure{Address: r.Address, Response: res.Response, Host: res.Host})
 			bounced = append(bounced, r)
@@ -323,24 +400,19 @@ func (q *Queue) attempt(g *group) {
 				// Past the queue lifetime there is nothing left to wait for.
 				q.log.Error("bounce could not be queued before the message expired, dropped",
 					zap.String("queue_id", msg.ID), zap.Error(err))
-				if err := q.st.RecipientDone(r); err != nil {
-					q.log.Error("remove bounced recipient", zap.String("queue_id", msg.ID), zap.Error(err))
-				}
+				q.save(r, "remove bounced recipient", func() error { return q.st.RecipientDone(r) })
 				continue
 			}
 			// Keep the verdict with the recipient so the retry sends the
 			// bounce, not the rejected message, again.
 			q.log.Error("bounce not queued, will retry", zap.String("queue_id", msg.ID), zap.Error(err))
-			if err := q.st.RecipientDefer(r, done.Add(backoffBase), bouncePending+failures[i].Response); err != nil {
-				q.log.Error("defer recipient", zap.String("queue_id", msg.ID), zap.Error(err))
-			}
+			verdict := bouncePending + failures[i].Response
+			q.save(r, "defer recipient", func() error { return q.st.RecipientDefer(r, done.Add(backoffBase), verdict) })
 		}
 		return
 	}
 	for _, r := range bounced {
-		if err := q.st.RecipientDone(r); err != nil {
-			q.log.Error("remove bounced recipient", zap.String("queue_id", msg.ID), zap.Error(err))
-		}
+		q.save(r, "remove bounced recipient", func() error { return q.st.RecipientDone(r) })
 	}
 }
 

@@ -24,7 +24,7 @@ func ReceivedHeader(hostname, with, queueID string, now time.Time) string {
 		with = " with " + with
 	}
 	return fmt.Sprintf("Received: by %s (%s)%s id %s;\r\n\t%s\r\n", hostname, Identifier, with, queueID,
-		now.Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+		now.Format(time.RFC1123Z))
 }
 
 // Config is the boot-time configuration. Domains, keys, users and networks
@@ -69,7 +69,8 @@ type Config struct {
 	DeliveryConcurrencyPerDomain int  // DELIVERY_CONCURRENCY_PER_DOMAIN
 	DeliveryIPv6                 bool // DELIVERY_IPV6
 
-	MaxConnectionsPerIP     int // MAX_CONNECTIONS_PER_IP
+	MaxConnections          int // MAX_CONNECTIONS (all listeners together)
+	MaxConnectionsPerIP     int // MAX_CONNECTIONS_PER_IP (per IPv4 address or IPv6 /64)
 	RateLimitUserPerHour    int // RATE_LIMIT_USER_PER_HOUR
 	RateLimitNetworkPerHour int // RATE_LIMIT_NETWORK_PER_HOUR
 	AuthFailureLimit        int // AUTH_FAILURE_LIMIT (per IP per 10 minutes)
@@ -118,6 +119,7 @@ func Load() (*Config, error) {
 		DeliveryConcurrencyPerDomain: l.positive("DELIVERY_CONCURRENCY_PER_DOMAIN", 2),
 		DeliveryIPv6:                 l.boolean("DELIVERY_IPV6", false),
 
+		MaxConnections:          l.positive("MAX_CONNECTIONS", 1000),
 		MaxConnectionsPerIP:     l.positive("MAX_CONNECTIONS_PER_IP", 10),
 		RateLimitUserPerHour:    l.positive("RATE_LIMIT_USER_PER_HOUR", 1000),
 		RateLimitNetworkPerHour: l.positive("RATE_LIMIT_NETWORK_PER_HOUR", 1000),
