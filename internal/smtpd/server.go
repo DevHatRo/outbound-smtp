@@ -48,11 +48,12 @@ type Server struct {
 	listeners []net.Listener
 	addrs     map[string]net.Addr
 
-	connMu sync.Mutex
-	conns  map[netip.Addr]int
+	connMu    sync.Mutex
+	conns     map[netip.Addr]int // by limitKey
+	connTotal int
 
 	authFail  *authLimiter
-	msgRate   *limiters
+	rcptRate  *limiters
 	hashSem   chan struct{} // bounds concurrent argon2 runs (19 MiB each)
 	dummyHash string        // verified for unknown users so timing does not reveal them
 }
@@ -69,7 +70,7 @@ func New(cfg *config.Config, st *store.Store, signer Signer, log *zap.Logger, m 
 		addrs:     map[string]net.Addr{},
 		conns:     map[netip.Addr]int{},
 		authFail:  newAuthLimiter(10 * time.Minute),
-		msgRate:   newLimiters(time.Hour),
+		rcptRate:  newLimiters(time.Hour),
 		hashSem:   make(chan struct{}, 4),
 		dummyHash: dummy,
 	}
@@ -195,19 +196,26 @@ func (l *limitListener) Accept() (net.Conn, error) {
 			return nil, err
 		}
 		ip := remoteIP(c.RemoteAddr())
+		key := limitKey(ip)
+		reason := ""
 		l.s.connMu.Lock()
-		over := l.s.conns[ip] >= l.s.cfg.MaxConnectionsPerIP
-		if !over {
-			l.s.conns[ip]++
+		switch {
+		case l.s.conns[key] >= l.s.cfg.MaxConnectionsPerIP:
+			reason = "per-IP connection limit"
+		case l.s.connTotal >= l.s.cfg.MaxConnections:
+			reason = "total connection limit"
+		default:
+			l.s.conns[key]++
+			l.s.connTotal++
 		}
 		l.s.connMu.Unlock()
-		if over {
+		if reason != "" {
 			if !l.implicitTLS { // a plaintext reply would be garbage inside a TLS handshake
 				_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
-				_, _ = c.Write([]byte("421 4.7.0 Too many connections from your address\r\n"))
+				_, _ = c.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
 			}
 			_ = c.Close() // best effort: the client is being turned away
-			l.s.log.Info("connection refused", zap.String("reason", "per-IP connection limit"),
+			l.s.log.Info("connection refused", zap.String("reason", reason),
 				zap.String("listener", l.name), zap.Stringer("client_ip", ip))
 			continue
 		}
@@ -217,8 +225,9 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		tc.tls.Store(l.implicitTLS)
 		tc.onClose = func() {
 			l.s.connMu.Lock()
-			if l.s.conns[ip]--; l.s.conns[ip] <= 0 {
-				delete(l.s.conns, ip)
+			l.s.connTotal--
+			if l.s.conns[key]--; l.s.conns[key] <= 0 {
+				delete(l.s.conns, key)
 			}
 			l.s.connMu.Unlock()
 			active.Dec()

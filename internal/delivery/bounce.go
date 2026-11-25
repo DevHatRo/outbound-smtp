@@ -46,7 +46,7 @@ const maxReturnedHeaders = 32 << 10
 // original envelope sender; the caller signs and queues it with a null
 // envelope sender so it can never bounce back in a loop.
 func BuildDSN(hostname string, orig store.Message, failures []Failure, now time.Time) []byte {
-	date := now.Format("Mon, 02 Jan 2006 15:04:05 -0700")
+	date := now.Format(time.RFC1123Z)
 	boundary := "dsn-" + store.NewID()
 	var b bytes.Buffer
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\r\n", a...) }
@@ -84,7 +84,7 @@ func BuildDSN(hostname string, orig store.Message, failures []Failure, now time.
 	w("")
 	w("Reporting-MTA: dns; %s", hostname)
 	w("X-Queue-ID: %s", orig.ID)
-	w("Arrival-Date: %s", time.Unix(orig.CreatedAt, 0).UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	w("Arrival-Date: %s", time.Unix(orig.CreatedAt, 0).UTC().Format(time.RFC1123Z))
 	for _, f := range failures {
 		w("")
 		w("Final-Recipient: rfc822; %s", f.Address)

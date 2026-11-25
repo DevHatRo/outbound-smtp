@@ -88,6 +88,9 @@ func TestSignVerifiesAgainstPublishedRecord(t *testing.T) {
 				"subject":      bytes.Replace(signed, []byte("Subject: hello"), []byte("Subject: PAY NOW"), 1),
 				"body":         bytes.Replace(signed, []byte("world"), []byte("WORLD"), 1),
 				"added header": bytes.Replace(signed, []byte("\r\nFrom:"), []byte("\r\nReply-To: evil@example.org\r\nFrom:"), 1),
+				// A second instance of a field that is present, placed where readers look first.
+				"second From":    append([]byte("From: Boss <boss@example.com>\r\n"), signed...),
+				"second Subject": append([]byte("Subject: PAY NOW\r\n"), signed...),
 			} {
 				if err := verify(tampered); err == nil {
 					t.Errorf("tampered %s still verifies", name)

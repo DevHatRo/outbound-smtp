@@ -76,31 +76,35 @@ func New(version string) *Metrics {
 // QueueStats is what the queue gauges read at scrape time.
 type QueueStats func() (pending, deferred, oldestUnix int64, err error)
 
+var (
+	queueDepthDesc = prometheus.NewDesc("smtprelay_queue_depth", "Queued recipients by state; -1 when the queue cannot be read.", []string{"state"}, nil)
+	queueAgeDesc   = prometheus.NewDesc("smtprelay_queue_oldest_message_age_seconds", "Age of the oldest queued message; 0 when the queue is empty.", nil, nil)
+)
+
+// queueCollector reads the queue once per scrape for all three series.
+type queueCollector struct{ stats QueueStats }
+
+func (c queueCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- queueDepthDesc
+	ch <- queueAgeDesc
+}
+
+func (c queueCollector) Collect(ch chan<- prometheus.Metric) {
+	pending, deferred, oldest, err := c.stats()
+	age := 0.0
+	if err != nil {
+		pending, deferred = -1, -1
+	} else if oldest != 0 {
+		age = time.Since(time.Unix(oldest, 0)).Seconds()
+	}
+	ch <- prometheus.MustNewConstMetric(queueDepthDesc, prometheus.GaugeValue, float64(pending), "pending")
+	ch <- prometheus.MustNewConstMetric(queueDepthDesc, prometheus.GaugeValue, float64(deferred), "deferred")
+	ch <- prometheus.MustNewConstMetric(queueAgeDesc, prometheus.GaugeValue, age)
+}
+
 // RegisterQueue adds smtprelay_queue_depth and smtprelay_queue_oldest_message_age_seconds.
 func (m *Metrics) RegisterQueue(stats QueueStats) {
-	const ns = "smtprelay"
-	depth := func(state string, pick func(p, d int64) int64) prometheus.GaugeFunc {
-		return prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: ns, Name: "queue_depth",
-			Help: "Queued recipients by state.", ConstLabels: prometheus.Labels{"state": state}}, func() float64 {
-			p, d, _, err := stats()
-			if err != nil {
-				return -1
-			}
-			return float64(pick(p, d))
-		})
-	}
-	m.Registry.MustRegister(
-		depth("pending", func(p, _ int64) int64 { return p }),
-		depth("deferred", func(_, d int64) int64 { return d }),
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Namespace: ns, Name: "queue_oldest_message_age_seconds",
-			Help: "Age of the oldest queued message; 0 when the queue is empty."}, func() float64 {
-			_, _, oldest, err := stats()
-			if err != nil || oldest == 0 {
-				return 0
-			}
-			return time.Since(time.Unix(oldest, 0)).Seconds()
-		}),
-	)
+	m.Registry.MustRegister(queueCollector{stats})
 }
 
 // TLSLabel renders a bool as the "tls" label value.

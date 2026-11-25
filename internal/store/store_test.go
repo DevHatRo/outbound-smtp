@@ -194,7 +194,7 @@ func TestQueue(t *testing.T) {
 	if st.Pending != 2 || st.Deferred != 0 || st.Oldest == 0 {
 		t.Errorf("stats = %+v", st)
 	}
-	due, err := s.DueRecipients(time.Now(), 10)
+	due, err := s.DueRecipients(time.Now(), 10, nil, nil)
 	if err != nil || len(due) != 2 {
 		t.Fatalf("due = %v, %v", due, err)
 	}
@@ -204,11 +204,17 @@ func TestQueue(t *testing.T) {
 	if len(due[0].Message.Body) != 0 {
 		t.Error("DueRecipients must not load message bodies")
 	}
+	if got, err := s.DueRecipients(time.Now(), 10, []string{"example.org"}, nil); err != nil || len(got) != 1 || got[0].Domain != "example.net" {
+		t.Errorf("skipping a domain: %+v, %v", got, err)
+	}
+	if got, err := s.DueRecipients(time.Now(), 10, nil, [][2]string{{"Q1", "example.net"}, {"Q9", "example.org"}}); err != nil || len(got) != 1 || got[0].Domain != "example.org" {
+		t.Errorf("skipping a group: %+v, %v", got, err)
+	}
 
 	if err := s.RecipientDefer(due[0], time.Now().Add(time.Hour), "451 try later"); err != nil {
 		t.Fatal(err)
 	}
-	if due, _ = s.DueRecipients(time.Now(), 10); len(due) != 1 {
+	if due, _ = s.DueRecipients(time.Now(), 10, nil, nil); len(due) != 1 {
 		t.Fatalf("after defer, due = %d, want 1", len(due))
 	}
 	if st, _ = s.QueueStats(); st.Pending != 1 || st.Deferred != 1 {
@@ -217,7 +223,7 @@ func TestQueue(t *testing.T) {
 	if err := s.RetryNow("Q1"); err != nil {
 		t.Fatal(err)
 	}
-	if due, _ = s.DueRecipients(time.Now(), 10); len(due) != 2 || due[0].Attempts+due[1].Attempts != 1 {
+	if due, _ = s.DueRecipients(time.Now(), 10, nil, nil); len(due) != 2 || due[0].Attempts+due[1].Attempts != 1 {
 		t.Fatalf("after retry, due = %+v", due)
 	}
 

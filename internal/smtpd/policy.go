@@ -50,6 +50,18 @@ func matchNetwork(nets []store.Network, ip netip.Addr) *store.Network {
 	return best
 }
 
+// limitKey is the address the per-client limits count against. An IPv6
+// client usually controls a whole /64, so that is what gets counted;
+// otherwise it would have a fresh allowance for every address in it.
+func limitKey(ip netip.Addr) netip.Addr {
+	if ip = ip.Unmap(); ip.Is6() {
+		if p, err := ip.Prefix(64); err == nil {
+			return p.Addr()
+		}
+	}
+	return ip
+}
+
 // limiters hands out one token bucket per key.
 type limiters struct {
 	mu      sync.Mutex

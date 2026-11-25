@@ -30,7 +30,8 @@ Usage:
   outbound-smtp healthcheck          (exit 0 if the running daemon answers /healthz)
   outbound-smtp domain  add|list|remove <domain>
   outbound-smtp dkim    generate|show|verify|rotate <domain> [--selector s] [--algorithm rsa|ed25519] [--force]
-  outbound-smtp user    add|passwd <username> [--allow domain-or-address]... [--rate N] [--password-stdin|--generate]
+  outbound-smtp user    add <username> [--allow domain-or-address]... [--rate N] [--password-stdin|--generate]
+  outbound-smtp user    passwd <username> [--password-stdin|--generate]
   outbound-smtp user    list|remove <username>
   outbound-smtp network add <cidr> [--domain d]... [--rate N]
   outbound-smtp network list|remove <cidr>

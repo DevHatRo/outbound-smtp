@@ -57,6 +57,19 @@ func TestAdminCLI(t *testing.T) {
 	if !strings.Contains(out, "shown once") {
 		t.Errorf("passwd --generate = %q", out)
 	}
+	// passwd must not look as if it restricted the user.
+	for _, extra := range [][]string{{"--allow", "example.com"}, {"--rate", "5"}, {"--rate", "0"}} {
+		args := append([]string{"user", "passwd", "--generate", "app"}, extra...)
+		if _, errOut, code := cli(t, "", args...); code == 0 || !strings.Contains(errOut, "only changes the password") {
+			t.Errorf("%v must be refused: %q", args, errOut)
+		}
+	}
+	if _, errOut, code := cli(t, "", "user", "add", "neg", "--generate", "--rate", "-5"); code == 0 || !strings.Contains(errOut, "--rate") {
+		t.Errorf("negative user rate accepted: %q", errOut)
+	}
+	if _, errOut, code := cli(t, "", "network", "add", "192.0.2.99", "--rate", "-5"); code == 0 || !strings.Contains(errOut, "--rate") {
+		t.Errorf("negative network rate accepted: %q", errOut)
+	}
 	if out := mustCLI(t, "", "user", "list"); strings.Contains(out, "argon2") {
 		t.Error("user list must not print password hashes")
 	}

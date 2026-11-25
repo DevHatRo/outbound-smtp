@@ -2,8 +2,10 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,15 +22,22 @@ import (
 )
 
 // scripted answers every recipient with the status its local part names.
+// Deliveries to slowDomain wait until hold is closed, when it is set.
 type scripted struct {
 	mu    sync.Mutex
 	calls int
+	hold  chan struct{}
 }
 
-func (s *scripted) Deliver(_ context.Context, _ store.Message, _ string, rcpts []store.Recipient) []delivery.Result {
+const slowDomain = "slow.example.net"
+
+func (s *scripted) Deliver(_ context.Context, _ store.Message, domain string, rcpts []store.Recipient) []delivery.Result {
 	s.mu.Lock()
 	s.calls++
 	s.mu.Unlock()
+	if s.hold != nil && domain == slowDomain {
+		<-s.hold
+	}
 	out := make([]delivery.Result, len(rcpts))
 	for i, r := range rcpts {
 		out[i] = delivery.Result{Recipient: r, Host: "mx.example.org", TLS: true}
@@ -60,11 +69,13 @@ type env struct {
 	dl  *scripted
 	m   *metrics.Metrics
 	now time.Time
+	dir string
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	st, err := store.Open(t.TempDir())
+	dir := t.TempDir()
+	st, err := store.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +83,7 @@ func newEnv(t *testing.T) *env {
 	// The store stamps rows with the wall clock. Start the fake clock slightly
 	// ahead of it so a row queued during the test is always due, even when the
 	// wall-clock second ticks over mid-test.
-	e := &env{t: t, st: st, dl: &scripted{}, m: metrics.New("test"), now: time.Now().Add(2 * time.Second)}
+	e := &env{t: t, st: st, dl: &scripted{}, m: metrics.New("test"), now: time.Now().Add(2 * time.Second), dir: dir}
 	cfg := &config.Config{Hostname: "relay.example.com", QueueMaxAge: 72 * time.Hour, DeliveryConcurrency: 4, DeliveryConcurrencyPerDomain: 2}
 	e.q = New(cfg, st, e.dl, markSigner{}, zap.NewNop(), e.m)
 	e.q.Now = func() time.Time { return e.now }
@@ -269,7 +280,7 @@ func TestBounceThatNeverQueuesIsDroppedAtExpiry(t *testing.T) {
 func TestStaleSnapshotDoesNotRedeliver(t *testing.T) {
 	e := newEnv(t)
 	e.enqueue("Q1", "app@example.com", "ok@example.org", "defer@example.org")
-	stale, _ := e.st.DueRecipients(e.now, 10) // what dispatch read before an earlier attempt finished
+	stale, _ := e.st.DueRecipients(e.now, 10, nil, nil) // what dispatch read before an earlier attempt finished
 	e.pass()
 	if e.dl.calls != 1 {
 		t.Fatalf("deliver calls = %d, want 1", e.dl.calls)
@@ -277,6 +288,98 @@ func TestStaleSnapshotDoesNotRedeliver(t *testing.T) {
 	e.q.attempt(&group{messageID: "Q1", domain: "example.org", rcpts: stale})
 	if e.dl.calls != 1 {
 		t.Errorf("stale snapshot caused %d extra delivery call(s)", e.dl.calls-1)
+	}
+}
+
+// A destination that does not answer must not hide the rest of the queue:
+// more due recipients than one page holds wait for it here.
+func TestBlockedDomainDoesNotStallOtherMail(t *testing.T) {
+	e := newEnv(t)
+	e.dl.hold = make(chan struct{})
+	for i := range 11 {
+		rcpts := make([]string, 100)
+		for j := range rcpts {
+			rcpts[j] = fmt.Sprintf("u%d@%s", j, slowDomain)
+		}
+		e.enqueue(fmt.Sprintf("SLOW%d", i), "app@example.com", rcpts...)
+	}
+	e.enqueue("OK1", "app@example.com", "ok@example.org")
+
+	// Rows are stamped with the wall clock: keep the fake clock ahead of it
+	// however long the enqueueing took.
+	e.now = time.Now().Add(2 * time.Second)
+	e.q.dispatch()
+	deadline := time.Now().Add(3 * time.Second)
+	for len(e.recipients("OK1")) != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	stalled := len(e.recipients("OK1")) != 0
+	close(e.dl.hold)
+	e.q.wg.Wait()
+	if stalled {
+		t.Fatal("mail for a healthy domain waited behind a blocked one")
+	}
+}
+
+// When the database cannot record an outcome, the write is retried. The
+// message is not sent to the remote server again.
+func TestStoreWriteFailureDoesNotRedeliver(t *testing.T) {
+	e := newEnv(t)
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(e.dir, "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close() //nolint:errcheck // test helper connection
+	if _, err := db.Exec(`CREATE TRIGGER full BEFORE DELETE ON recipients BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	e.enqueue("Q1", "app@example.com", "ok@example.org")
+	e.enqueue("Q2", "app@example.com", "ok@example.net")
+	for range 3 {
+		e.pass()
+	}
+	if e.dl.calls != 2 {
+		t.Fatalf("deliver calls = %d, want 2: an accepted message was sent again", e.dl.calls)
+	}
+	if len(e.recipients("")) != 2 {
+		t.Fatalf("queue = %+v, want both rows still there", e.recipients(""))
+	}
+	// Nothing new starts while outcomes cannot be recorded.
+	e.enqueue("Q3", "app@example.com", "ok@example.org")
+	e.pass()
+	if e.dl.calls != 2 {
+		t.Fatalf("a delivery started while the database was not writable (%d calls)", e.dl.calls)
+	}
+
+	if _, err := db.Exec(`DROP TRIGGER full`); err != nil {
+		t.Fatal(err)
+	}
+	// Stopping the scheduler writes what is outstanding, so a restart does
+	// not deliver it again.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.q.Run(ctx)
+	if left := e.recipients(""); len(left) != 1 || left[0].MessageID != "Q3" || e.dl.calls != 2 {
+		t.Fatalf("after shutdown: queue = %+v, calls = %d; want only Q3 and 2", left, e.dl.calls)
+	}
+	e.pass()
+	if left := e.recipients(""); len(left) != 0 || e.dl.calls != 3 {
+		t.Errorf("after the database recovered: queue = %+v, calls = %d; want empty and 3", left, e.dl.calls)
+	}
+}
+
+// A write that fails while a pass is still reading pages stops that pass too,
+// not only the next one.
+func TestNothingStartsOnceAnOutcomeIsUnwritten(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue("Q1", "app@example.com", "ok@example.org")
+	e.q.pending[recipientKey{id: 999, messageID: "GONE"}] = func() error { return errors.New("disk full") }
+	if e.q.dispatchPage() {
+		t.Error("the pass must end")
+	}
+	e.q.wg.Wait()
+	if e.dl.calls != 0 || len(e.recipients("Q1")) != 1 {
+		t.Errorf("a delivery started with an outcome still unwritten (%d calls)", e.dl.calls)
 	}
 }
 

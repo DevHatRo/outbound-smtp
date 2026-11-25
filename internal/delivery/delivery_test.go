@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"strings"
@@ -48,6 +49,8 @@ type fixture struct {
 	sink   *testutil.Sink
 	client *Client
 	dialed []string
+	roots  *x509.CertPool    // trusts the sink's certificate
+	dialTo map[string]string // host -> address, instead of the sink
 }
 
 // newFixture starts a sink and a client whose every connection lands on it,
@@ -55,8 +58,9 @@ type fixture struct {
 func newFixture(t *testing.T, sinkTLS bool, dns fakeDNS, down ...string) *fixture {
 	t.Helper()
 	var tlsCfg *tls.Config
+	var roots *x509.CertPool
 	if sinkTLS {
-		certFile, keyFile, err := testutil.WriteSelfSignedCert(t.TempDir(), time.Now().Add(time.Hour))
+		certFile, keyFile, err := testutil.WriteCert(t.TempDir(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), smarthostName)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,13 +69,19 @@ func newFixture(t *testing.T, sinkTLS bool, dns fakeDNS, down ...string) *fixtur
 			t.Fatal(err)
 		}
 		tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots = x509.NewCertPool()
+		roots.AddCert(leaf)
 	}
 	sink, err := testutil.StartSink(tlsCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(sink.Close)
-	f := &fixture{sink: sink}
+	f := &fixture{sink: sink, roots: roots, dialTo: map[string]string{}}
 	f.client = New(&config.Config{Hostname: "relay.example.com", SmarthostPort: 587})
 	f.client.Resolver = dns
 	f.client.Dial = func(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -81,10 +91,16 @@ func newFixture(t *testing.T, sinkTLS bool, dns fakeDNS, down ...string) *fixtur
 				return nil, errors.New("connection refused")
 			}
 		}
-		return (&net.Dialer{}).DialContext(ctx, "tcp", sink.Addr)
+		to := sink.Addr
+		if host, _, _ := net.SplitHostPort(addr); f.dialTo[host] != "" {
+			to = f.dialTo[host]
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", to)
 	}
 	return f
 }
+
+const smarthostName = "smarthost.example.net"
 
 func rcpts(addrs ...string) []store.Recipient {
 	out := make([]store.Recipient, len(addrs))
@@ -203,33 +219,111 @@ func TestDeliverDNS(t *testing.T) {
 	}
 }
 
-// Smarthost credentials must never travel without verified TLS.
-func TestSmarthostCredentialsNeedVerifiedTLS(t *testing.T) {
-	for name, sinkTLS := range map[string]bool{"no STARTTLS offered": false, "certificate does not verify": true} {
-		f := newFixture(t, sinkTLS, fakeDNS{})
-		f.client.cfg.SmarthostHost, f.client.cfg.SmarthostUsername, f.client.cfg.SmarthostPassword = "smarthost.example.net", "user", "secret"
-		res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org"))
-		if res[0].Status != Deferred {
-			t.Errorf("%s: %+v, want deferred", name, res[0])
-		}
-		if strings.Contains(res[0].Response, "secret") {
-			t.Errorf("%s: response leaks the password: %s", name, res[0].Response)
-		}
-		if n := len(f.sink.Messages()); n != 0 {
-			t.Errorf("%s: %d message(s) sent without verified TLS", name, n)
-		}
-		if len(f.dialed) != 1 || f.dialed[0] != "smarthost.example.net:587" {
-			t.Errorf("%s: dialed %v, want one attempt and no plaintext retry", name, f.dialed)
+// Nothing goes to a smarthost without verified TLS: not the credentials, and
+// not the mail of a smarthost that needs none.
+func TestSmarthostNeedsVerifiedTLS(t *testing.T) {
+	for _, user := range []string{"user", ""} {
+		for name, sinkTLS := range map[string]bool{"no STARTTLS offered": false, "certificate does not verify": true} {
+			if user == "" {
+				name += ", no credentials"
+			}
+			f := newFixture(t, sinkTLS, fakeDNS{})
+			f.client.cfg.SmarthostHost = smarthostName
+			if user != "" {
+				f.client.cfg.SmarthostUsername, f.client.cfg.SmarthostPassword = user, "secret"
+			}
+			res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org"))
+			if res[0].Status != Deferred {
+				t.Errorf("%s: %+v, want deferred", name, res[0])
+			}
+			if strings.Contains(res[0].Response, "secret") {
+				t.Errorf("%s: response leaks the password: %s", name, res[0].Response)
+			}
+			if n := len(f.sink.Messages()); n != 0 {
+				t.Errorf("%s: %d message(s) sent without verified TLS", name, n)
+			}
+			if len(f.dialed) != 1 || f.dialed[0] != smarthostName+":587" {
+				t.Errorf("%s: dialed %v, want one attempt and no plaintext retry", name, f.dialed)
+			}
 		}
 	}
 }
 
 func TestSmarthostWithoutCredentialsSkipsMX(t *testing.T) {
 	f := newFixture(t, true, fakeDNS{err: errors.New("DNS must not be used")})
-	f.client.cfg.SmarthostHost = "smarthost.example.net"
+	f.client.cfg.SmarthostHost = smarthostName
+	f.client.RootCAs = f.roots
 	res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org"))
 	if res[0].Status != Delivered || !res[0].TLS {
 		t.Errorf("result = %+v", res[0])
+	}
+}
+
+// A connection that dies at MAIL has said nothing about the message.
+func TestDeliverTriesNextMXWhenConnectionDropsAtMAIL(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close() //nolint:errcheck // test listener
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close() //nolint:errcheck // test connection
+		buf := make([]byte, 512)
+		_, _ = c.Write([]byte("220 mx1.example.org ESMTP\r\n"))
+		_, _ = c.Read(buf) // EHLO
+		_, _ = c.Write([]byte("250 mx1.example.org\r\n"))
+		_, _ = c.Read(buf) // MAIL, answered by hanging up
+	}()
+	f := newFixture(t, true, twoMX)
+	f.dialTo["mx1.example.org"] = ln.Addr().String()
+	res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org"))
+	if res[0].Status != Delivered || res[0].Host != "mx2.example.org" {
+		t.Errorf("result = %+v, want delivery via mx2", res[0])
+	}
+}
+
+func TestDirectDeliveryRefusesLocalAddresses(t *testing.T) {
+	for addr, refused := range map[string]bool{
+		"127.0.0.1:25": true, "[::1]:25": true, "0.0.0.0:25": true, "169.254.10.1:25": true,
+		"[fe80::1%lo0]:25": true, "[::ffff:127.0.0.1]:25": true,
+		"192.0.2.10:25": false, "10.0.0.5:25": false, "[2001:db8::25]:25": false,
+	} {
+		if err := refuseLocal("tcp", addr, nil); (err != nil) != refused {
+			t.Errorf("refuseLocal(%s) = %v, want refused = %v", addr, err, refused)
+		}
+	}
+	if New(&config.Config{}).Dial == nil {
+		t.Fatal("no dialer")
+	}
+	// The real dialer applies it: a domain whose MX is the relay's own host gets no connection.
+	_, err := New(&config.Config{}).Dial(context.Background(), "tcp4", "127.0.0.1:25")
+	if err == nil || !strings.Contains(err.Error(), "not connecting") {
+		t.Errorf("dial to loopback = %v, want a refusal", err)
+	}
+}
+
+func TestLoginAuth(t *testing.T) {
+	// Servers word the prompts differently, or send none: the answers go by position.
+	for _, prompts := range [][2]string{{"Username:", "Password:"}, {"User Name", "Password"}, {"", ""}} {
+		a := &loginAuth{username: "user", password: "secret"}
+		if proto, first, err := a.Start(nil); proto != "LOGIN" || first != nil || err != nil {
+			t.Fatalf("Start = %q, %q, %v", proto, first, err)
+		}
+		for i, want := range []string{"user", "secret"} {
+			if got, err := a.Next([]byte(prompts[i]), true); err != nil || string(got) != want {
+				t.Errorf("challenge %d %q: answered %q, %v; want %q", i+1, prompts[i], got, err, want)
+			}
+		}
+		if _, err := a.Next([]byte("Password:"), true); err == nil {
+			t.Errorf("%q: a third challenge must not be answered", prompts)
+		}
+		if got, err := a.Next(nil, false); got != nil || err != nil {
+			t.Errorf("Next at the end = %q, %v", got, err)
+		}
 	}
 }
 
