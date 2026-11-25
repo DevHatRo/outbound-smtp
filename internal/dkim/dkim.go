@@ -130,22 +130,29 @@ func VerifyDNS(ctx context.Context, lookup LookupTXT, k store.DKIMKey) error {
 	if err != nil {
 		return fmt.Errorf("look up TXT %s: %w", want.Name, err)
 	}
-	wantTags := tags(want.Value)
-	for _, txt := range txts {
-		got := tags(txt)
-		if got["p"] == "" {
-			continue
-		}
-		algo := got["k"]
-		if algo == "" {
-			algo = RSA // RFC 6376: k defaults to rsa
-		}
-		if got["p"] == wantTags["p"] && algo == wantTags["k"] {
-			return nil
-		}
+	// RFC 6376 allows one TXT record per selector; verifiers fail or behave
+	// unpredictably with more, even if one of them is right.
+	if len(txts) > 1 {
+		return fmt.Errorf("TXT %s has %d records; a DKIM selector must have exactly one", want.Name, len(txts))
+	}
+	if len(txts) == 0 {
+		return fmt.Errorf("TXT %s has no DKIM record", want.Name)
+	}
+	wantTags, got := tags(want.Value), tags(txts[0])
+	if got["p"] == "" {
+		return fmt.Errorf("TXT %s has no DKIM record", want.Name)
+	}
+	if v, ok := got["v"]; ok && v != "DKIM1" {
+		return fmt.Errorf("TXT %s has version %q; receivers only accept v=DKIM1", want.Name, v)
+	}
+	algo := got["k"]
+	if algo == "" {
+		algo = RSA // RFC 6376: k defaults to rsa
+	}
+	if got["p"] != wantTags["p"] || algo != wantTags["k"] {
 		return fmt.Errorf("TXT %s is published but holds a different key", want.Name)
 	}
-	return fmt.Errorf("TXT %s has no DKIM record", want.Name)
+	return nil
 }
 
 // Signer signs messages with the active key of the From domain.

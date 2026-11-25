@@ -77,6 +77,11 @@ func TestAdminCLI(t *testing.T) {
 		t.Errorf("Docker pool should warn: %q", errOut)
 	}
 	mustCLI(t, "", "network", "remove", "192.0.2.10/32")
+	mustCLI(t, "", "network", "add", "::ffff:192.0.2.20/128") // stored as the IPv4 address clients are matched by
+	if out := mustCLI(t, "", "network", "list"); !strings.Contains(out, "192.0.2.20/32") || strings.Contains(out, "ffff") {
+		t.Errorf("mapped IPv4 prefix not normalised: %q", out)
+	}
+	mustCLI(t, "", "network", "remove", "192.0.2.20")
 	mustCLI(t, "", "network", "add", "2001:db8::/32") // the narrowest IPv6 prefix refused is /31
 	mustCLI(t, "", "network", "remove", "2001:db8::/32")
 
@@ -120,7 +125,10 @@ func TestDKIMCLI(t *testing.T) {
 		t.Fatal("generate for an unconfigured domain must fail")
 	}
 	mustCLI(t, "", "domain", "add", "example.com")
-	out := mustCLI(t, "", "dkim", "generate", "example.com", "--selector", "one")
+	out := mustCLI(t, "", "dkim", "generate", "example.com", "--selector", "ONE") // stored lowercase
+	if _, _, code := cli(t, "", "dkim", "generate", "example.com", "--selector", "One"); code == 0 {
+		t.Error("a selector differing only in case must be refused: DNS cannot tell them apart")
+	}
 	if !strings.Contains(out, "one._domainkey.example.com") || !strings.Contains(out, "v=DKIM1; k=rsa; p=") || strings.Contains(out, "PRIVATE") {
 		t.Fatalf("generate output: %s", out)
 	}

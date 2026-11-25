@@ -232,10 +232,17 @@ func parseCIDR(s string) (netip.Prefix, error) {
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("invalid CIDR %q", s)
 	}
+	// Clients are matched by their IPv4 address, so store "::ffff:a.b.c.d/n" as IPv4.
+	if p.Addr().Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}, fmt.Errorf("invalid CIDR %q", s)
+		}
+		p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96).Masked()
+	}
 	// A /8 is already a large slice of IPv4; the same number of bits in IPv6
 	// would cover a 256th of the whole address space.
 	minBits, family := 8, "IPv4"
-	if p.Addr().Is6() && !p.Addr().Is4In6() {
+	if p.Addr().Is6() {
 		minBits, family = 32, "IPv6"
 	}
 	if p.Bits() < minBits {

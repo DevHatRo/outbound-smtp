@@ -19,9 +19,10 @@ type certReloader struct {
 	onLoad            func(notAfter time.Time)
 	log               *zap.Logger
 
-	mu    sync.RWMutex
-	cert  *tls.Certificate
-	stamp string // modification times of both files at the last successful load
+	loadMu sync.Mutex // one load at a time, so an older read cannot publish last
+	mu     sync.RWMutex
+	cert   *tls.Certificate
+	stamp  string // modification times of both files at the last successful load
 }
 
 func newCertReloader(certFile, keyFile string, log *zap.Logger, onLoad func(time.Time)) (*certReloader, error) {
@@ -44,6 +45,8 @@ func (r *certReloader) fileStamp() string {
 
 // load reads the key pair. On failure the previous certificate stays in use.
 func (r *certReloader) load() error {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
 	stamp := r.fileStamp()
 	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
 	if err != nil {
@@ -53,8 +56,12 @@ func (r *certReloader) load() error {
 	if err != nil {
 		return fmt.Errorf("parse TLS certificate: %w", err)
 	}
-	if time.Now().After(leaf.NotAfter) {
+	now := time.Now()
+	if now.After(leaf.NotAfter) {
 		return fmt.Errorf("TLS certificate %s expired on %s", r.certFile, leaf.NotAfter.Format(time.RFC3339))
+	}
+	if now.Before(leaf.NotBefore) {
+		return fmt.Errorf("TLS certificate %s is not valid before %s", r.certFile, leaf.NotBefore.Format(time.RFC3339))
 	}
 	cert.Leaf = leaf
 	r.mu.Lock()

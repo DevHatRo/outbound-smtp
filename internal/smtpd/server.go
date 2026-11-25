@@ -43,14 +43,15 @@ type Server struct {
 	m      *metrics.Metrics
 	wake   func() // tells the queue a message was committed
 
-	certs   *certReloader
-	servers []*smtp.Server
-	addrs   map[string]net.Addr
+	certs     *certReloader
+	servers   []*smtp.Server
+	listeners []net.Listener
+	addrs     map[string]net.Addr
 
 	connMu sync.Mutex
 	conns  map[netip.Addr]int
 
-	authFail  *limiters
+	authFail  *authLimiter
 	msgRate   *limiters
 	hashSem   chan struct{} // bounds concurrent argon2 runs (19 MiB each)
 	dummyHash string        // verified for unknown users so timing does not reveal them
@@ -67,7 +68,7 @@ func New(cfg *config.Config, st *store.Store, signer Signer, log *zap.Logger, m 
 		cfg: cfg, st: st, signer: signer, log: log, m: m, wake: wake,
 		addrs:     map[string]net.Addr{},
 		conns:     map[netip.Addr]int{},
-		authFail:  newLimiters(10 * time.Minute),
+		authFail:  newAuthLimiter(10 * time.Minute),
 		msgRate:   newLimiters(time.Hour),
 		hashSem:   make(chan struct{}, 4),
 		dummyHash: dummy,
@@ -88,11 +89,21 @@ func (s *Server) Start() error {
 	if s.cfg.EnablePort25 {
 		specs = append(specs, spec{Listener25, s.cfg.Listen25})
 	}
+	// Bind every port before serving on any: a port that is already taken
+	// must fail the start without leaving another listener accepting mail.
+	bound := make([]net.Listener, 0, len(specs))
 	for _, sp := range specs {
 		tcp, err := net.Listen("tcp", sp.addr)
 		if err != nil {
-			return errors.Join(fmt.Errorf("listen %s (%s): %w", sp.name, sp.addr, err), s.Shutdown(context.Background()))
+			for _, l := range bound {
+				_ = l.Close() // nothing is served yet
+			}
+			return fmt.Errorf("listen %s (%s): %w", sp.name, sp.addr, err)
 		}
+		bound = append(bound, tcp)
+	}
+	for i, sp := range specs {
+		tcp := bound[i]
 		s.addrs[sp.name] = tcp.Addr()
 		implicit := sp.name == Listener465
 		var ln net.Listener = &limitListener{Listener: tcp, s: s, name: sp.name, implicitTLS: implicit}
@@ -114,9 +125,10 @@ func (s *Server) Start() error {
 			srv.TLSConfig = s.certs.tlsConfig() // offered through STARTTLS
 		}
 		s.servers = append(s.servers, srv)
+		s.listeners = append(s.listeners, ln)
 		s.log.Info("listening", zap.String("listener", sp.name), zap.Stringer("addr", tcp.Addr()))
 		go func() {
-			if err := srv.Serve(ln); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, smtp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 				s.log.Error("SMTP listener stopped", zap.String("listener", sp.name), zap.Error(err))
 			}
 		}()
@@ -133,14 +145,24 @@ func (s *Server) ReloadCert() error { return s.certs.load() }
 // WatchCert reloads the certificate when its files change, until ctx is done.
 func (s *Server) WatchCert(ctx context.Context) { s.certs.watch(ctx, 30*time.Second) }
 
-// Shutdown stops accepting and waits for open sessions until ctx expires.
+// Shutdown stops accepting on every listener at once, then waits for open
+// sessions until ctx expires.
 func (s *Server) Shutdown(ctx context.Context) error {
-	var errs []error
-	for _, srv := range s.servers {
-		if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
-			errs = append(errs, err)
-		}
+	// Close the sockets directly as well: a Serve goroutine that has not
+	// registered its listener yet would otherwise keep accepting.
+	for _, ln := range s.listeners {
+		_ = ln.Close() // may already be closed by the server
 	}
+	errs := make([]error, len(s.servers))
+	var wg sync.WaitGroup
+	for i, srv := range s.servers {
+		wg.Go(func() {
+			if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+				errs[i] = err
+			}
+		})
+	}
+	wg.Wait()
 	return errors.Join(errs...)
 }
 

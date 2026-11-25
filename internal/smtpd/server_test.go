@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -373,7 +375,7 @@ func TestLimits(t *testing.T) {
 		if n := testutil.ToFloat64(e.m.AuthAttempts.WithLabelValues("blocked")); n != 1 {
 			t.Errorf("blocked metric = %v", n)
 		}
-		e.srv.authFail = newLimiters(10 * time.Minute) // lift the block for the next subtests
+		e.srv.authFail = newAuthLimiter(10 * time.Minute) // lift the block for the next subtests
 		_ = c.Close()
 	})
 	t.Run("message size", func(t *testing.T) {
@@ -413,7 +415,8 @@ func TestLimits(t *testing.T) {
 			}
 			open = append(open, c)
 			buf := make([]byte, 4)
-			if _, err := c.Read(buf); err != nil || string(buf) != "220 " {
+			_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "220 " {
 				t.Fatalf("greeting = %q, %v", buf, err)
 			}
 		}
@@ -423,7 +426,8 @@ func TestLimits(t *testing.T) {
 		}
 		open = append(open, c)
 		buf := make([]byte, 4)
-		if _, err := c.Read(buf); err != nil || string(buf) != "421 " {
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "421 " {
 			t.Fatalf("fourth connection got %q, %v; want 421", buf, err)
 		}
 	})
@@ -459,6 +463,69 @@ func TestStartFailsWithoutValidCertificate(t *testing.T) {
 	}
 	if _, err := New(cfg, st, fakeSigner{}, zap.NewNop(), metrics.New("test"), func() {}); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Errorf("expired certificate: got %v", err)
+	}
+}
+
+// If one port cannot be bound, no listener may be left accepting mail.
+func TestStartFailureLeavesNothingListening(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freeAddr := free.Addr().String()
+	_ = free.Close()
+
+	dir := t.TempDir()
+	certFile, keyFile, err := certs.WriteSelfSignedCert(dir, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := &config.Config{Hostname: "relay.example.com", Listen465: freeAddr, Listen587: taken.Addr().String(),
+		TLSCertFile: certFile, TLSKeyFile: keyFile, MaxConnectionsPerIP: 5}
+	srv, err := New(cfg, st, fakeSigner{}, zap.NewNop(), metrics.New("test"), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start must fail when a port is already in use")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if c, err := net.DialTimeout("tcp", freeAddr, time.Second); err == nil {
+		_ = c.Close()
+		t.Error("the 465 listener kept accepting after Start failed")
+	}
+}
+
+// A certificate that is not valid yet must not replace the one in use.
+func TestFutureCertificateIsNotLoaded(t *testing.T) {
+	e := start(t, nil)
+	before := e.srv.certs.cert
+	dir := t.TempDir()
+	certFile, keyFile, err := certs.WriteCert(dir, time.Now().Add(time.Hour), time.Now().Add(48*time.Hour), "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for src, dst := range map[string]string{certFile: e.srv.cfg.TLSCertFile, keyFile: e.srv.cfg.TLSKeyFile} {
+		data, _ := os.ReadFile(src)
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.srv.ReloadCert(); err == nil || !strings.Contains(err.Error(), "not valid before") {
+		t.Errorf("reload = %v, want a not-yet-valid error", err)
+	}
+	if e.srv.certs.cert != before {
+		t.Error("the certificate in use was replaced by one that is not valid yet")
 	}
 }
 
@@ -515,9 +582,64 @@ func TestPrepare(t *testing.T) {
 	if string(out) != want || addr != "a@example.com" || domain != "example.com" {
 		t.Errorf("prepare =\n%q\nwant\n%q\n(%s, %s)", out, want, addr, domain)
 	}
+	// Blind-copy variants go; an empty Date or Message-ID is replaced, not duplicated.
+	out, _, _, err = prepare([]byte("From: a@example.com\r\nResent-Bcc: h@example.org\r\nDate:\r\nMessage-ID: \r\n\r\nx\r\n"),
+		"QID", "relay.example.com", "ESMTP", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(out); strings.Contains(s, "Resent-Bcc") || strings.Count(s, "\nDate:") != 1 || strings.Count(s, "\nMessage-ID:") != 1 ||
+		strings.Contains(s, "Date:\r\n") {
+		t.Errorf("prepare output:\n%s", s)
+	}
 	loop := bytes.Repeat([]byte("Received: x\r\n"), maxReceived+1)
 	if _, _, _, err := prepare(append(loop, "From: a@example.com\r\n\r\n"...), "Q", "h", "ESMTP", now); !errors.Is(err, errBadMessage) {
 		t.Errorf("mail loop: got %v", err)
+	}
+}
+
+func TestAuthLimiter(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	a := newAuthLimiter(10 * time.Minute)
+	a.now = func() time.Time { return now }
+
+	// Attempts in flight count: with a limit of 2, a third parallel attempt waits its turn.
+	f1, ok1 := a.begin("192.0.2.1", 2)
+	f2, ok2 := a.begin("192.0.2.1", 2)
+	if _, ok3 := a.begin("192.0.2.1", 2); !ok1 || !ok2 || ok3 {
+		t.Fatalf("parallel attempts admitted: %v %v %v, want true true false", ok1, ok2, ok3)
+	}
+	f1(false) // a success frees its slot and leaves no mark
+	f2(true)
+	f3, ok := a.begin("192.0.2.1", 2)
+	if !ok {
+		t.Fatal("one failure of two must not block")
+	}
+	f3(true)
+	if _, ok := a.begin("192.0.2.1", 2); ok {
+		t.Error("two failures must block the address")
+	}
+	if _, ok := a.begin("192.0.2.2", 2); !ok {
+		t.Error("another address must not be affected")
+	}
+	now = now.Add(10 * time.Minute)
+	if _, ok := a.begin("192.0.2.1", 2); !ok {
+		t.Error("the block must lift after the window")
+	}
+}
+
+func TestLimitersKeepActiveBucketsWhenBounded(t *testing.T) {
+	l := newLimiters(time.Hour)
+	l.allow("busy", 1) // now empty: has history worth keeping
+	for i := range 10001 {
+		l.get(fmt.Sprintf("idle-%d", i), 1)
+	}
+	l.get("trigger", 1)
+	if l.allow("busy", 1) {
+		t.Error("bounding the map forgot a client that was at its limit")
+	}
+	if len(l.buckets) > 3 {
+		t.Errorf("idle buckets were not dropped: %d left", len(l.buckets))
 	}
 }
 

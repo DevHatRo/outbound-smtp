@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -107,7 +108,7 @@ func Load() (*Config, error) {
 		SmarthostHost:     l.str("SMARTHOST_HOST", ""),
 		SmarthostPort:     l.positive("SMARTHOST_PORT", 587),
 		SmarthostUsername: l.str("SMARTHOST_USERNAME", ""),
-		SmarthostPassword: l.str("SMARTHOST_PASSWORD", ""),
+		SmarthostPassword: os.Getenv("SMARTHOST_PASSWORD"), // not trimmed: spaces can be part of it
 
 		DeliveryConcurrency:          l.positive("DELIVERY_CONCURRENCY", 20),
 		DeliveryConcurrencyPerDomain: l.positive("DELIVERY_CONCURRENCY_PER_DOMAIN", 2),
@@ -254,8 +255,10 @@ func (l *loader) size(name string, def int64) int64 {
 		}
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n <= 0 {
+	if err != nil || n <= 0 || n > math.MaxInt64/mult {
+		// The overflow check matters: a wrapped value of 0 would mean "no limit".
 		l.fail(name, fmt.Errorf("want bytes or a value such as 25MB"))
+		return def
 	}
 	return n * mult
 }

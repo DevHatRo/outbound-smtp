@@ -205,7 +205,7 @@ func TestQueue(t *testing.T) {
 		t.Error("DueRecipients must not load message bodies")
 	}
 
-	if err := s.RecipientDefer(due[0].ID, time.Now().Add(time.Hour), "451 try later"); err != nil {
+	if err := s.RecipientDefer(due[0], time.Now().Add(time.Hour), "451 try later"); err != nil {
 		t.Fatal(err)
 	}
 	if due, _ = s.DueRecipients(time.Now(), 10); len(due) != 1 {
@@ -232,6 +232,19 @@ func TestQueue(t *testing.T) {
 	}
 	if _, err := s.GetMessage("Q1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("message must go with its last recipient, got %v", err)
+	}
+	// A stale handle (same row ID, other message) must not touch a newer recipient.
+	m.ID = "Q2"
+	if err := s.Enqueue(m, []string{"z@example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := s.ListRecipients("Q2")
+	stale := Recipient{ID: fresh[0].ID, MessageID: "Q1"}
+	if err := errors.Join(s.RecipientDone(stale), s.RecipientDefer(stale, time.Now().Add(time.Hour), "x")); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := s.ListRecipients("Q2"); len(after) != 1 || after[0].State != StatePending {
+		t.Errorf("a stale recipient handle changed a newer message: %+v", after)
 	}
 	if err := s.DeleteMessage("Q1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("delete missing = %v, want ErrNotFound", err)

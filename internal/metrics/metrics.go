@@ -118,7 +118,9 @@ func (m *Metrics) Serve(ctx context.Context, ln net.Listener, healthy func() err
 		}
 		_, _ = w.Write([]byte("ok\n")) // the client going away is not our problem
 	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// ReadTimeout also bounds a request body that never arrives.
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	select {

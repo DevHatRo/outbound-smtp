@@ -166,7 +166,10 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 	}
 	defer conn.Close() //nolint:errcheck // best effort; QUIT is sent on the success path
 	step := func(d time.Duration) { _ = conn.SetDeadline(time.Now().Add(d)) }
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) }) // abort on shutdown timeout
+	// Closing (not a deadline, which the next step would overwrite) is what
+	// makes cancellation stick. raw is never reassigned, unlike conn.
+	raw := conn
+	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
 	defer stop()
 
 	withCreds := smarthost && c.cfg.SmarthostUsername != ""
@@ -227,6 +230,12 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 
 	step(c.StepTimeout)
 	if err := cl.Mail(msg.EnvelopeFrom); err != nil {
+		// 421 is the server closing the session, not a verdict on this
+		// message: let the caller try the next MX.
+		var pe *textproto.Error
+		if errors.As(err, &pe) && pe.Code == 421 {
+			return nil, fmt.Errorf("MAIL at %s: %w", host, err)
+		}
 		setAll(err, nil)
 		return results, nil
 	}
@@ -236,6 +245,12 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 		step(c.StepTimeout)
 		if err := cl.Rcpt(r.Address); err != nil {
 			results[i].Status, results[i].Response = classify(err)
+			// RFC 5321 4.5.3.1.10: 552 at RCPT is the legacy "too many
+			// recipients" reply and must be treated as temporary.
+			var pe *textproto.Error
+			if errors.As(err, &pe) && pe.Code == 552 {
+				results[i].Status = Deferred
+			}
 			continue
 		}
 		accepted[i], anyAccepted = true, true

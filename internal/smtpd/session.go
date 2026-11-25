@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -59,11 +60,20 @@ type session struct {
 	ip       netip.Addr
 	tls      bool
 	who      *principal
-	from     string
-	rcpts    []string
+
+	// mu guards the transaction: go-smtp runs Data in its own goroutine for
+	// chunked transfers and may call Reset while it is still reading.
+	mu    sync.Mutex
+	from  string
+	rcpts []string
 }
 
-func (s *session) Reset()        { s.from, s.rcpts = "", nil }
+func (s *session) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.from, s.rcpts = "", nil
+}
+
 func (s *session) Logout() error { return nil }
 
 // ---- AUTH ----
@@ -118,7 +128,8 @@ func (l *loginServer) Next(response []byte) (challenge []byte, done bool, err er
 func (s *session) authenticate(username, pw string) error {
 	srv := s.s
 	key, limit := s.ip.String(), srv.cfg.AuthFailureLimit
-	if srv.authFail.exhausted(key, limit) {
+	finish, ok := srv.authFail.begin(key, limit)
+	if !ok {
 		srv.m.AuthAttempts.WithLabelValues("blocked").Inc()
 		srv.log.Info("authentication blocked", zap.String("reason", "too many failures"), zap.Stringer("client_ip", s.ip))
 		return smtpErr(454, smtp.EnhancedCode{4, 7, 0}, "Too many failed authentication attempts, try again later")
@@ -129,18 +140,20 @@ func (s *session) authenticate(username, pw string) error {
 		hash = srv.dummyHash // same work as for a real user
 	} else if err != nil {
 		srv.log.Error("load user", zap.Error(err))
+		finish(false)
 		return errTemporary
 	}
 	srv.hashSem <- struct{}{}
-	ok, verr := password.Verify(hash, pw)
+	match, verr := password.Verify(hash, pw)
 	<-srv.hashSem
-	if err != nil || verr != nil || !ok {
-		srv.authFail.allow(key, limit) // spend one failure token
+	if err != nil || verr != nil || !match {
+		finish(true)
 		srv.m.AuthAttempts.WithLabelValues("failure").Inc()
 		srv.log.Info("authentication failed", zap.String("username", username), zap.Stringer("client_ip", s.ip),
 			zap.String("listener", s.listener))
 		return smtp.ErrAuthFailed
 	}
+	finish(false)
 	srv.m.AuthAttempts.WithLabelValues("success").Inc()
 	s.who = &principal{source: store.SourceAuth, ident: u.Username, patterns: u.SenderPatterns(), rate: u.RatePerHour}
 	return nil
@@ -149,15 +162,15 @@ func (s *session) authenticate(username, pw string) error {
 // ---- MAIL / RCPT / DATA ----
 
 // reject counts, logs and traces a refusal, and returns the SMTP error.
-func (s *session) reject(reason string, e *smtp.SMTPError) error {
+func (s *session) reject(reason, sender string, e *smtp.SMTPError) error {
 	s.s.m.Rejected.WithLabelValues(reason).Inc()
 	_, span := tracing.Tracer().Start(context.Background(), "smtp.reject", trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(attribute.String("smtprelay.reason", reason), attribute.String("smtprelay.listener", s.listener),
-			attribute.String("smtprelay.sender", s.from), attribute.Int("smtp.response.code", e.Code)))
+			attribute.String("smtprelay.sender", sender), attribute.Int("smtp.response.code", e.Code)))
 	span.SetStatus(codes.Error, e.Message)
 	span.End()
 	fields := []zap.Field{zap.String("reason", reason), zap.String("listener", s.listener), zap.Stringer("client_ip", s.ip),
-		zap.String("sender", s.from), zap.Int("code", e.Code), zap.String("response", e.Message)}
+		zap.String("sender", sender), zap.Int("code", e.Code), zap.String("response", e.Message)}
 	if s.who != nil {
 		fields = append(fields, zap.String("source", s.who.source), zap.String("client", s.who.ident))
 	}
@@ -167,11 +180,11 @@ func (s *session) reject(reason string, e *smtp.SMTPError) error {
 
 // checkSender applies the sender rules to one address (envelope sender or
 // From header): its domain must be configured, exactly, and the principal
-// must be allowed to use it.
-func (s *session) checkSender(what, addr string) error {
-	_, domain, err := store.SplitAddress(addr)
+// must be allowed to use it. sender is the envelope sender, for the log.
+func (s *session) checkSender(who *principal, what, addr, sender string) error {
+	local, domain, err := store.SplitAddress(addr)
 	if err != nil {
-		return s.reject(metrics.ReasonSenderNotAllowed, smtpErr(553, smtp.EnhancedCode{5, 1, 7}, "%s address is not valid", what))
+		return s.reject(metrics.ReasonSenderNotAllowed, sender, smtpErr(553, smtp.EnhancedCode{5, 1, 7}, "%s address is not valid", what))
 	}
 	ok, err := s.s.st.DomainExists(domain)
 	if err != nil {
@@ -179,49 +192,57 @@ func (s *session) checkSender(what, addr string) error {
 		return errTemporary
 	}
 	if !ok {
-		return s.reject(metrics.ReasonSenderNotAllowed, smtpErr(550, smtp.EnhancedCode{5, 7, 1},
+		return s.reject(metrics.ReasonSenderNotAllowed, sender, smtpErr(550, smtp.EnhancedCode{5, 7, 1},
 			"%s rejected: %s is not a domain this relay sends for", what, domain))
 	}
-	if !senderAllowed(s.who.patterns, addr) {
-		return s.reject(metrics.ReasonSenderNotAllowed, smtpErr(550, smtp.EnhancedCode{5, 7, 1},
+	// The normalised form, so "app@example.com." matches the pattern "example.com".
+	if !senderAllowed(who.patterns, local+"@"+domain) {
+		return s.reject(metrics.ReasonSenderNotAllowed, sender, smtpErr(550, smtp.EnhancedCode{5, 7, 1},
 			"%s rejected: you are not allowed to send as %s", what, addr))
 	}
 	return nil
 }
 
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
-	s.from = from
+	who := s.who
 	if s.listener == Listener587 && !s.tls {
-		return s.reject(metrics.ReasonRelayDenied, smtpErr(530, smtp.EnhancedCode{5, 7, 0}, "Must issue a STARTTLS command first"))
+		return s.reject(metrics.ReasonRelayDenied, from, smtpErr(530, smtp.EnhancedCode{5, 7, 0}, "Must issue a STARTTLS command first"))
 	}
-	if s.who == nil {
+	if who == nil {
 		if s.listener == Listener25 {
-			return s.reject(metrics.ReasonRelayDenied, smtpErr(550, smtp.EnhancedCode{5, 7, 1}, "Relay access denied"))
+			return s.reject(metrics.ReasonRelayDenied, from, smtpErr(550, smtp.EnhancedCode{5, 7, 1}, "Relay access denied"))
 		}
-		return s.reject(metrics.ReasonRelayDenied, smtpErr(530, smtp.EnhancedCode{5, 7, 0}, "Authentication required"))
+		return s.reject(metrics.ReasonRelayDenied, from, smtpErr(530, smtp.EnhancedCode{5, 7, 0}, "Authentication required"))
 	}
 	if from == "" {
-		return s.reject(metrics.ReasonSenderNotAllowed, smtpErr(550, smtp.EnhancedCode{5, 7, 1}, "Null sender is not accepted from clients"))
+		return s.reject(metrics.ReasonSenderNotAllowed, from, smtpErr(550, smtp.EnhancedCode{5, 7, 1}, "Null sender is not accepted from clients"))
 	}
-	if err := s.checkSender("Sender", from); err != nil {
+	if err := s.checkSender(who, "Sender", from, from); err != nil {
 		return err
 	}
 	limit := s.s.cfg.RateLimitUserPerHour
-	if s.who.source == store.SourceNetwork {
+	if who.source == store.SourceNetwork {
 		limit = s.s.cfg.RateLimitNetworkPerHour
 	}
-	if s.who.rate != nil {
-		limit = *s.who.rate
+	if who.rate != nil {
+		limit = *who.rate
 	}
-	if !s.s.msgRate.allow(s.who.source+":"+s.who.ident, limit) {
-		return s.reject(metrics.ReasonRateLimit, smtpErr(451, smtp.EnhancedCode{4, 7, 1}, "Message rate limit exceeded, try again later"))
+	if !s.s.msgRate.allow(who.source+":"+who.ident, limit) {
+		return s.reject(metrics.ReasonRateLimit, from, smtpErr(451, smtp.EnhancedCode{4, 7, 1}, "Message rate limit exceeded, try again later"))
 	}
+	// Only now does the transaction exist: a refused MAIL must not replace
+	// the sender of anything accepted earlier.
+	s.mu.Lock()
+	s.from, s.rcpts = from, nil
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.who == nil || s.from == "" { // go-smtp enforces the order; never rely on it for relay control
-		return s.reject(metrics.ReasonRelayDenied, smtpErr(503, smtp.EnhancedCode{5, 5, 1}, "MAIL first"))
+		return s.reject(metrics.ReasonRelayDenied, s.from, smtpErr(503, smtp.EnhancedCode{5, 5, 1}, "MAIL first"))
 	}
 	if _, _, err := store.SplitAddress(to); err != nil {
 		return smtpErr(501, smtp.EnhancedCode{5, 1, 3}, "Bad recipient address syntax")
@@ -243,18 +264,23 @@ func (s *session) with() string {
 
 func (s *session) Data(r io.Reader) error {
 	srv := s.s
-	if s.who == nil || s.from == "" || len(s.rcpts) == 0 {
-		return s.reject(metrics.ReasonRelayDenied, smtpErr(503, smtp.EnhancedCode{5, 5, 1}, "MAIL and RCPT first"))
+	// One consistent snapshot of the transaction; a concurrent Reset then
+	// only affects the next one.
+	s.mu.Lock()
+	who, from, rcpts := s.who, s.from, append([]string(nil), s.rcpts...)
+	s.mu.Unlock()
+	if who == nil || from == "" || len(rcpts) == 0 {
+		return s.reject(metrics.ReasonRelayDenied, from, smtpErr(503, smtp.EnhancedCode{5, 5, 1}, "MAIL and RCPT first"))
 	}
 	queueID := store.NewID()
 	ctx, span := tracing.Tracer().Start(context.Background(), "smtp.receive", trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(
 			attribute.String("smtprelay.queue_id", queueID),
 			attribute.String("smtprelay.listener", s.listener),
-			attribute.String("smtprelay.source", s.who.source),
-			attribute.String("smtprelay.client", s.who.ident),
-			attribute.String("smtprelay.sender", s.from),
-			attribute.Int("smtprelay.recipients", len(s.rcpts)),
+			attribute.String("smtprelay.source", who.source),
+			attribute.String("smtprelay.client", who.ident),
+			attribute.String("smtprelay.sender", from),
+			attribute.Int("smtprelay.recipients", len(rcpts)),
 		))
 	defer span.End()
 	fail := func(err error) error {
@@ -262,19 +288,21 @@ func (s *session) Data(r io.Reader) error {
 		return err
 	}
 
+	// A read cut short by a reset or a dropped connection returns here and
+	// never reaches the queue.
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		if errors.Is(err, smtp.ErrDataTooLarge) {
-			return fail(s.reject(metrics.ReasonSize, smtp.ErrDataTooLarge))
+			return fail(s.reject(metrics.ReasonSize, from, smtp.ErrDataTooLarge))
 		}
 		return fail(err)
 	}
 	msg, fromAddr, fromDomain, err := prepare(raw, queueID, srv.cfg.Hostname, s.with(), time.Now())
 	if err != nil {
 		text := strings.TrimPrefix(err.Error(), errBadMessage.Error()+": ")
-		return fail(s.reject(metrics.ReasonInvalid, smtpErr(554, smtp.EnhancedCode{5, 6, 0}, "Message rejected: %s", text)))
+		return fail(s.reject(metrics.ReasonInvalid, from, smtpErr(554, smtp.EnhancedCode{5, 6, 0}, "Message rejected: %s", text)))
 	}
-	if err := s.checkSender("From header", fromAddr); err != nil {
+	if err := s.checkSender(who, "From header", fromAddr, from); err != nil {
 		return fail(err)
 	}
 	span.SetAttributes(attribute.String("smtprelay.from_domain", fromDomain), attribute.Int("smtprelay.size", len(msg)))
@@ -294,19 +322,19 @@ func (s *session) Data(r io.Reader) error {
 
 	// The client gets 250 only after this transaction is committed.
 	err = srv.st.Enqueue(store.Message{
-		ID: queueID, EnvelopeFrom: s.from, FromDomain: fromDomain, Source: s.who.source, SourceIdent: s.who.ident,
+		ID: queueID, EnvelopeFrom: from, FromDomain: fromDomain, Source: who.source, SourceIdent: who.ident,
 		Body: signed, Traceparent: tracing.Inject(ctx),
-	}, s.rcpts)
+	}, rcpts)
 	if err != nil {
 		srv.log.Error("enqueue failed, message not accepted", zap.String("queue_id", queueID), zap.Error(err))
 		return fail(errTemporary)
 	}
-	srv.m.Accepted.WithLabelValues(s.who.source, fromDomain).Inc()
+	srv.m.Accepted.WithLabelValues(who.source, fromDomain).Inc()
 	srv.log.Info("message accepted",
-		zap.String("queue_id", queueID), zap.String("sender", s.from), zap.String("from_domain", fromDomain),
-		zap.String("source", s.who.source), zap.String("client", s.who.ident), zap.String("listener", s.listener),
-		zap.Stringer("client_ip", s.ip), zap.Bool("tls", s.tls), zap.Int("recipients", len(s.rcpts)),
-		zap.Strings("recipient_domains", recipientDomains(s.rcpts)), zap.Int("size", len(signed)),
+		zap.String("queue_id", queueID), zap.String("sender", from), zap.String("from_domain", fromDomain),
+		zap.String("source", who.source), zap.String("client", who.ident), zap.String("listener", s.listener),
+		zap.Stringer("client_ip", s.ip), zap.Bool("tls", s.tls), zap.Int("recipients", len(rcpts)),
+		zap.Strings("recipient_domains", recipientDomains(rcpts)), zap.Int("size", len(signed)),
 		zap.String("trace_id", tracing.TraceID(ctx)))
 	srv.wake()
 	return nil

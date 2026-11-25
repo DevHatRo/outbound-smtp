@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/DevHatRo/outbound-smtp/internal/dkim"
@@ -56,6 +57,9 @@ func (a *app) dkim(st *store.Store, args []string) error {
 	if err != nil {
 		return err
 	}
+	// DNS names are case-insensitive: "ONE" and "one" would be two keys
+	// competing for one record.
+	*selector = strings.ToLower(*selector)
 	domain, err := store.NormalizeDomain(pos[0])
 	if err != nil {
 		return err

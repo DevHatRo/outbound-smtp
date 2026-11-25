@@ -57,15 +57,20 @@ func prepare(raw []byte, queueID, hostname, with string, now time.Time) (out []b
 	date := now.Format("Mon, 02 Jan 2006 15:04:05 -0700")
 	var b bytes.Buffer
 	b.WriteString(config.ReceivedHeader(hostname, with, queueID, now))
+	// Blind-copy fields never leave the relay. An empty Date or Message-ID is
+	// dropped too, so the generated one is not a second instance.
+	drop := map[string]bool{"bcc": true, "resent-bcc": true}
 	if msg.Header.Get("Date") == "" {
 		fmt.Fprintf(&b, "Date: %s\r\n", date)
+		drop["date"] = true
 	}
 	if msg.Header.Get("Message-Id") == "" {
 		fmt.Fprintf(&b, "Message-ID: <%s@%s>\r\n", strings.ToLower(queueID), hostname)
+		drop["message-id"] = true
 	}
 	for _, field := range header {
 		name, _, _ := bytes.Cut(field, []byte(":"))
-		if strings.EqualFold(string(bytes.TrimSpace(name)), "Bcc") {
+		if drop[strings.ToLower(string(bytes.TrimSpace(name)))] {
 			continue
 		}
 		b.Write(field)

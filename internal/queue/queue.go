@@ -4,8 +4,11 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -182,6 +185,20 @@ func (q *Queue) dispatch() {
 	}
 }
 
+// bouncePending prefixes last_error of a recipient whose delivery failed
+// for good but whose bounce could not be queued yet. Such a recipient is
+// never offered to the remote server again; only the bounce is retried.
+const bouncePending = "bounce pending: "
+
+// redact removes the recipient's address from a remote reply before it is
+// logged or traced: servers often echo it ("550 <user@example.org>: unknown").
+func redact(reply, address string) string {
+	if address == "" {
+		return reply
+	}
+	return regexp.MustCompile("(?i)"+regexp.QuoteMeta(address)).ReplaceAllLiteralString(reply, "[recipient]")
+}
+
 // attempt handles one message for one destination domain.
 func (q *Queue) attempt(g *group) {
 	msg, err := q.st.GetMessage(g.messageID)
@@ -192,6 +209,24 @@ func (q *Queue) attempt(g *group) {
 	now := q.Now()
 	expiry := time.Unix(msg.CreatedAt, 0).Add(q.cfg.QueueMaxAge)
 
+	// The group was read before it was admitted; an attempt that finished in
+	// between has already removed or rescheduled some of its rows. Work only
+	// on what the store says is still due, or mail would be delivered twice.
+	current, err := q.st.ListRecipients(g.messageID)
+	if err != nil {
+		q.log.Error("reload recipients", zap.String("queue_id", g.messageID), zap.Error(err))
+		return
+	}
+	var rcpts []store.Recipient
+	for _, r := range current {
+		if r.Domain == g.domain && r.NextAttemptAt <= now.Unix() {
+			rcpts = append(rcpts, r)
+		}
+	}
+	if len(rcpts) == 0 {
+		return
+	}
+
 	// Detached from the scheduler's context on purpose: shutdown lets attempts finish.
 	ctx, cancel := context.WithTimeout(tracing.Extract(context.Background(), msg.Traceparent), q.AttemptTimeout)
 	defer cancel()
@@ -199,40 +234,49 @@ func (q *Queue) attempt(g *group) {
 		attribute.String("smtprelay.queue_id", msg.ID),
 		attribute.String("smtprelay.sender", msg.EnvelopeFrom),
 		attribute.String("smtprelay.recipient_domain", g.domain),
-		attribute.Int("smtprelay.recipients", len(g.rcpts)),
+		attribute.Int("smtprelay.recipients", len(rcpts)),
 	))
 	defer span.End()
 
-	// Expired recipients bounce without another attempt, but only once they
-	// were tried at least once (the daemon may have been down for days).
 	var try []store.Recipient
 	var results []delivery.Result
-	for _, r := range g.rcpts {
-		if r.Attempts > 0 && !now.Before(expiry) {
+	for _, r := range rcpts {
+		switch {
+		case strings.HasPrefix(r.LastError, bouncePending):
+			// Already failed permanently; only its bounce is outstanding.
+			results = append(results, delivery.Result{Recipient: r, Status: delivery.Bounced,
+				Response: strings.TrimPrefix(r.LastError, bouncePending)})
+		case r.Attempts > 0 && !now.Before(expiry):
+			// Expired recipients bounce without another attempt, but only once
+			// they were tried at least once (the daemon may have been down for days).
 			results = append(results, delivery.Result{Recipient: r, Status: delivery.Bounced,
 				Response: fmt.Sprintf("4.4.7 message expired after %s in the queue; last error: %s", q.cfg.QueueMaxAge, r.LastError)})
-			continue
+		default:
+			try = append(try, r)
 		}
-		try = append(try, r)
 	}
 	if len(try) > 0 {
 		start := time.Now()
 		results = append(results, q.dl.Deliver(ctx, msg, g.domain, try)...)
 		q.m.DeliveryDuration.Observe(time.Since(start).Seconds())
 	}
+	// Backoff counts from the end of the attempt: a delivery that fails after
+	// several minutes must not be due again the moment it returns.
+	done := q.Now()
 
 	var failures []delivery.Failure
 	var bounced []store.Recipient
 	delivered := 0
 	for _, res := range results {
 		r := res.Recipient
+		safe := redact(res.Response, r.Address)
 		q.m.Deliveries.WithLabelValues(res.Status.String(), metrics.TLSLabel(res.TLS)).Inc()
 		span.AddEvent("recipient", trace.WithAttributes(attribute.String("smtprelay.result", res.Status.String()),
-			attribute.String("smtprelay.response", res.Response), attribute.String("server.address", res.Host),
+			attribute.String("smtprelay.response", safe), attribute.String("server.address", res.Host),
 			attribute.Bool("smtprelay.tls", res.TLS)))
 		q.log.Info("delivery attempt",
 			zap.String("queue_id", msg.ID), zap.String("sender", msg.EnvelopeFrom), zap.String("recipient_domain", g.domain),
-			zap.String("result", res.Status.String()), zap.String("response", res.Response), zap.String("remote_host", res.Host),
+			zap.String("result", res.Status.String()), zap.String("response", safe), zap.String("remote_host", res.Host),
 			zap.Bool("tls", res.TLS), zap.Int("attempt", r.Attempts+1), zap.String("trace_id", tracing.TraceID(ctx)))
 		switch res.Status {
 		case delivery.Delivered:
@@ -242,11 +286,11 @@ func (q *Queue) attempt(g *group) {
 				q.log.Error("mark delivered", zap.String("queue_id", msg.ID), zap.Error(err))
 			}
 		case delivery.Deferred:
-			next := now.Add(q.Jitter(Backoff(r.Attempts + 1)))
+			next := done.Add(q.Jitter(Backoff(r.Attempts + 1)))
 			if next.After(expiry) {
 				next = expiry // the next look at this recipient bounces it
 			}
-			if err := q.st.RecipientDefer(r.ID, next, res.Response); err != nil {
+			if err := q.st.RecipientDefer(r, next, res.Response); err != nil {
 				q.log.Error("defer recipient", zap.String("queue_id", msg.ID), zap.Error(err))
 			}
 		case delivery.Bounced:
@@ -263,9 +307,20 @@ func (q *Queue) attempt(g *group) {
 	// Queue the bounce before dropping the recipients: a crash in between
 	// sends the bounce twice instead of never.
 	if err := q.bounce(ctx, msg, failures); err != nil {
-		q.log.Error("bounce not queued, will retry", zap.String("queue_id", msg.ID), zap.Error(err))
-		for _, r := range bounced {
-			if err := q.st.RecipientDefer(r.ID, now.Add(backoffBase), "bounce could not be queued: "+err.Error()); err != nil {
+		for i, r := range bounced {
+			if !done.Before(expiry) {
+				// Past the queue lifetime there is nothing left to wait for.
+				q.log.Error("bounce could not be queued before the message expired, dropped",
+					zap.String("queue_id", msg.ID), zap.Error(err))
+				if err := q.st.RecipientDone(r); err != nil {
+					q.log.Error("remove bounced recipient", zap.String("queue_id", msg.ID), zap.Error(err))
+				}
+				continue
+			}
+			// Keep the verdict with the recipient so the retry sends the
+			// bounce, not the rejected message, again.
+			q.log.Error("bounce not queued, will retry", zap.String("queue_id", msg.ID), zap.Error(err))
+			if err := q.st.RecipientDefer(r, done.Add(backoffBase), bouncePending+failures[i].Response); err != nil {
 				q.log.Error("defer recipient", zap.String("queue_id", msg.ID), zap.Error(err))
 			}
 		}
@@ -295,9 +350,12 @@ func (q *Queue) bounce(ctx context.Context, msg store.Message, failures []delive
 	signed, err := q.signer.Sign(msg.FromDomain, dsn)
 	if err != nil {
 		q.m.DKIMSign.WithLabelValues(msg.FromDomain, "error").Inc()
+		span.SetStatus(codes.Error, err.Error())
+		if !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("sign bounce: %w", err) // may be transient: keep the bounce
+		}
 		// The sending domain or its key was removed; an unsigned bounce would
 		// only hurt the reputation of the relay.
-		span.SetStatus(codes.Error, err.Error())
 		q.log.Error("bounce cannot be signed, dropped", zap.String("queue_id", msg.ID), zap.String("from_domain", msg.FromDomain), zap.Error(err))
 		return nil
 	}

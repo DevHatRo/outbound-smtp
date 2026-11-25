@@ -26,6 +26,10 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@v5
         with:
+          # Pull requests opened with GITHUB_TOKEN do not trigger CI. To have CI
+          # run on the release pull request, add a repository secret
+          # RELEASE_PLEASE_TOKEN (a GitHub App token is preferable to a personal one).
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -40,10 +44,16 @@ jobs:
       id-token: write # sign the provenance attestation
       attestations: write
     steps:
+      # The tag, not the commit that triggered this run: a newer push may have
+      # replaced the run that created the release.
       - uses: actions/checkout@v7
-      - name: Image name (lowercase)
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - name: Image name (lowercase) and released commit
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -64,6 +74,7 @@ jobs:
             org.opencontainers.image.title=outbound-smtp
             org.opencontainers.image.description=Outbound-only SMTP relay with DKIM signing
             org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.revision=${{ steps.image.outputs.sha }}
       - id: build
         uses: docker/build-push-action@v7
         with:
@@ -74,7 +85,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }} # source, version, revision, licenses
           build-args: |
             VERSION=${{ needs.release-please.outputs.version }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.image.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Build provenance attestation
@@ -93,6 +104,8 @@ jobs:
       contents: write # upload release assets
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -102,9 +115,10 @@ jobs:
           VERSION: ${{ needs.release-please.outputs.version }}
         run: |
           mkdir dist
+          commit="$(git rev-parse HEAD)" # the tagged commit
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA}" \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${commit}" \
               -o "dist/outbound-smtp_${VERSION}_linux_${arch}" ./cmd/outbound-smtp
           done
           cd dist && sha256sum outbound-smtp_* > checksums.txt
