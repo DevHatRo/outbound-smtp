@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/DevHatRo/outbound-smtp/internal/config"
 	"github.com/DevHatRo/outbound-smtp/internal/delivery"
@@ -276,6 +277,33 @@ func TestStaleSnapshotDoesNotRedeliver(t *testing.T) {
 	e.q.attempt(&group{messageID: "Q1", domain: "example.org", rcpts: stale})
 	if e.dl.calls != 1 {
 		t.Errorf("stale snapshot caused %d extra delivery call(s)", e.dl.calls-1)
+	}
+}
+
+// Recipient addresses reach the log only when the operator opts in.
+func TestLogRecipientsIsOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		e := newEnv(t)
+		core, logs := observer.New(zap.InfoLevel)
+		e.q.log = zap.New(core)
+		e.q.cfg.LogRecipients = enabled
+		e.enqueue("Q1", "app@example.com", "bounce@example.org")
+		e.pass()
+		entries := logs.FilterMessage("delivery attempt").All()
+		if len(entries) != 1 {
+			t.Fatalf("delivery log lines = %d, want 1", len(entries))
+		}
+		fields := entries[0].ContextMap()
+		_, has := fields["recipient"]
+		if has != enabled {
+			t.Errorf("LOG_RECIPIENTS=%v: recipient field present = %v", enabled, has)
+		}
+		if enabled && fields["recipient"] != "bounce@example.org" {
+			t.Errorf("recipient = %v", fields["recipient"])
+		}
+		if fields["recipient_domain"] != "example.org" {
+			t.Errorf("recipient_domain = %v", fields["recipient_domain"])
+		}
 	}
 }
 

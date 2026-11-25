@@ -155,6 +155,7 @@ SQLite; CLI changes take effect without a restart.
 | `AUTH_FAILURE_LIMIT` | `5` | Failed logins per client IP per 10 minutes before AUTH is refused. |
 | `METRICS_LISTEN` | `:9090` | HTTP listener for `/metrics` and `/healthz`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `LOG_RECIPIENTS` | `false` | Also log full recipient addresses (`recipient` on delivery lines, `recipient_addresses` on accepted lines). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | Enables tracing; see [OpenTelemetry](#opentelemetry-traces). |
 
 Notes:
@@ -322,11 +323,17 @@ per delivery attempt:
 {"level":"info","time":"...","msg":"delivery attempt","queue_id":"ILF4UHF7JRE6FWZ5","sender":"app@example.com","recipient_domain":"example.org","result":"delivered","response":"250 2.0.0 Ok: queued","remote_host":"mx.example.org","tls":true,"attempt":1,"trace_id":""}
 ```
 
-Passwords and message bodies are never logged. The relay itself records
+Passwords and message bodies are never logged. By default the relay records
 recipients by domain only, and removes the recipient's address from the
 remote server's reply before logging it. Other text a remote server puts in
 its reply is logged as received. Use `queue list` for full addresses of mail
 still in the queue.
+
+Set `LOG_RECIPIENTS=true` to log full recipient addresses as well: delivery
+lines gain a `recipient` field and keep the remote reply unredacted, and
+accepted lines gain `recipient_addresses`. This puts personal data in your
+logs, so check your retention and access rules first. Metrics and traces are
+not affected and never carry recipient addresses.
 
 ## Prometheus metrics
 

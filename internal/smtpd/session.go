@@ -330,12 +330,17 @@ func (s *session) Data(r io.Reader) error {
 		return fail(errTemporary)
 	}
 	srv.m.Accepted.WithLabelValues(who.source, fromDomain).Inc()
-	srv.log.Info("message accepted",
+	fields := []zap.Field{
 		zap.String("queue_id", queueID), zap.String("sender", from), zap.String("from_domain", fromDomain),
 		zap.String("source", who.source), zap.String("client", who.ident), zap.String("listener", s.listener),
 		zap.Stringer("client_ip", s.ip), zap.Bool("tls", s.tls), zap.Int("recipients", len(rcpts)),
 		zap.Strings("recipient_domains", recipientDomains(rcpts)), zap.Int("size", len(signed)),
-		zap.String("trace_id", tracing.TraceID(ctx)))
+		zap.String("trace_id", tracing.TraceID(ctx)),
+	}
+	if srv.cfg.LogRecipients {
+		fields = append(fields, zap.Strings("recipient_addresses", rcpts))
+	}
+	srv.log.Info("message accepted", fields...)
 	srv.wake()
 	return nil
 }
