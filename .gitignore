@@ -43,3 +43,7 @@ go.work.sum
 *.pem
 *.key
 coverage.out
+
+# Claude Code configuration is local only
+/.claude/
+/CLAUDE.md

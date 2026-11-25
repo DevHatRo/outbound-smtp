@@ -9,3 +9,4 @@ data
 *.key
 *.md
 docker-compose.yml
+.claude
