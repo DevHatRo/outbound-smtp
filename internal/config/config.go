@@ -38,6 +38,16 @@ type Config struct {
 	TLSKeyFile   string // TLS_KEY_FILE
 	DataDir      string // DATA_DIR
 
+	// Let's Encrypt (or another ACME CA) instead of TLS_CERT_FILE/TLS_KEY_FILE.
+	ACMEEnabled      bool     // ACME_ENABLED
+	ACMEAgreeTOS     bool     // ACME_AGREE_TOS
+	ACMEEmail        string   // ACME_EMAIL (optional contact address)
+	ACMEDomains      []string // ACME_DOMAINS (default: SMTP_HOSTNAME)
+	ACMEChallenge    string   // ACME_CHALLENGE: "http" or "dns"
+	ACMEHTTPListen   string   // ACME_HTTP_LISTEN
+	ACMEDNSProvider  string   // ACME_DNS_PROVIDER: cloudflare, hetzner or cpanel
+	ACMEDirectoryURL string   // ACME_DIRECTORY_URL
+
 	MaxMessageSize int64         // MAX_MESSAGE_SIZE
 	MaxRecipients  int           // MAX_RECIPIENTS
 	QueueMaxAge    time.Duration // QUEUE_MAX_AGE
@@ -74,6 +84,14 @@ func Load() (*Config, error) {
 		TLSKeyFile:   l.str("TLS_KEY_FILE", ""),
 		DataDir:      l.str("DATA_DIR", "/data"),
 
+		ACMEEnabled:      l.boolean("ACME_ENABLED", false),
+		ACMEAgreeTOS:     l.boolean("ACME_AGREE_TOS", false),
+		ACMEEmail:        l.str("ACME_EMAIL", ""),
+		ACMEChallenge:    strings.ToLower(l.str("ACME_CHALLENGE", "http")),
+		ACMEHTTPListen:   l.str("ACME_HTTP_LISTEN", ":80"),
+		ACMEDNSProvider:  strings.ToLower(l.str("ACME_DNS_PROVIDER", "")),
+		ACMEDirectoryURL: l.str("ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory"),
+
 		MaxMessageSize: l.size("MAX_MESSAGE_SIZE", 25<<20),
 		MaxRecipients:  l.positive("MAX_RECIPIENTS", 100),
 		QueueMaxAge:    l.duration("QUEUE_MAX_AGE", 72*time.Hour),
@@ -94,6 +112,11 @@ func Load() (*Config, error) {
 
 		MetricsListen: l.str("METRICS_LISTEN", ":9090"),
 	}
+	for _, d := range strings.Split(l.str("ACME_DOMAINS", c.Hostname), ",") {
+		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
+			c.ACMEDomains = append(c.ACMEDomains, d)
+		}
+	}
 	if err := c.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {
 		l.fail("LOG_LEVEL", err)
 	}
@@ -111,8 +134,46 @@ func (c *Config) ValidateServe() error {
 	if c.Hostname == "" {
 		return fmt.Errorf("SMTP_HOSTNAME is required (the name this server announces in EHLO; it should match the PTR record of the sending IP)")
 	}
-	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
-		return fmt.Errorf("TLS_CERT_FILE and TLS_KEY_FILE are required: ports 465 and 587 do not run without a certificate")
+	ownCert := c.TLSCertFile != "" || c.TLSKeyFile != ""
+	switch {
+	case c.ACMEEnabled && ownCert:
+		return fmt.Errorf("choose one certificate source: either TLS_CERT_FILE and TLS_KEY_FILE, or ACME_ENABLED=true")
+	case c.ACMEEnabled:
+		return c.validateACME()
+	case c.TLSCertFile == "" || c.TLSKeyFile == "":
+		return fmt.Errorf("a certificate is required, ports 465 and 587 do not run without one: " +
+			"set TLS_CERT_FILE and TLS_KEY_FILE, or ACME_ENABLED=true for Let's Encrypt")
+	}
+	return nil
+}
+
+// DNSProviders are the DNS-01 providers built into the binary.
+var DNSProviders = []string{"cloudflare", "hetzner", "cpanel"}
+
+func (c *Config) validateACME() error {
+	if !c.ACMEAgreeTOS {
+		return fmt.Errorf("ACME_AGREE_TOS=true is required: it states that you accept the terms of service of the certificate authority")
+	}
+	if len(c.ACMEDomains) == 0 {
+		return fmt.Errorf("ACME_DOMAINS is empty")
+	}
+	for _, d := range c.ACMEDomains {
+		if strings.ContainsAny(d, "*/: ") || !strings.Contains(d, ".") {
+			return fmt.Errorf("ACME_DOMAINS: %q is not a host name (wildcards are not supported)", d)
+		}
+	}
+	switch c.ACMEChallenge {
+	case "http":
+	case "dns":
+		ok := false
+		for _, p := range DNSProviders {
+			ok = ok || p == c.ACMEDNSProvider
+		}
+		if !ok {
+			return fmt.Errorf("ACME_DNS_PROVIDER must be one of %s, got %q", strings.Join(DNSProviders, ", "), c.ACMEDNSProvider)
+		}
+	default:
+		return fmt.Errorf("ACME_CHALLENGE must be http or dns, got %q", c.ACMEChallenge)
 	}
 	return nil
 }

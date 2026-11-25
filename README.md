@@ -34,8 +34,9 @@ It is meant as a replacement for an outbound-only Postfix.
 
 ## Quick start
 
-You need a TLS certificate for the relay's hostname and a server whose IP has
-a PTR record pointing to that hostname.
+You need a server whose IP has a PTR record pointing to the relay's hostname,
+and a TLS certificate for that hostname: your own, or one the relay obtains
+from Let's Encrypt (see [TLS certificates](#tls-certificates)).
 
 ```yaml
 # docker-compose.yml
@@ -120,8 +121,16 @@ SQLite; CLI changes take effect without a restart.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SMTP_HOSTNAME` | *(required)* | Name used in EHLO, `Received` and `Message-ID`. Every message carries a `Received: by <hostname> (DevHatRO SMTP) ...` field identifying the relay. Must match the PTR record of the sending IP. |
-| `TLS_CERT_FILE` | *(required)* | PEM certificate chain. The daemon does not start without a valid, unexpired certificate. |
-| `TLS_KEY_FILE` | *(required)* | PEM private key. |
+| `TLS_CERT_FILE` | *(unset)* | PEM certificate chain you provide. Required unless `ACME_ENABLED=true`. The daemon does not start without a valid, unexpired certificate. |
+| `TLS_KEY_FILE` | *(unset)* | PEM private key for `TLS_CERT_FILE`. |
+| `ACME_ENABLED` | `false` | Obtain and renew the certificate from Let's Encrypt instead. See [TLS certificates](#tls-certificates). |
+| `ACME_AGREE_TOS` | `false` | Must be `true` with ACME: you accept the certificate authority's terms of service. |
+| `ACME_EMAIL` | *(unset)* | Optional contact address for the ACME account. |
+| `ACME_DOMAINS` | `SMTP_HOSTNAME` | Comma-separated host names for the certificate. No wildcards. |
+| `ACME_CHALLENGE` | `http` | `http` (HTTP-01) or `dns` (DNS-01). |
+| `ACME_HTTP_LISTEN` | `:80` | Where the HTTP-01 challenge is answered. Open only while a certificate is being issued. |
+| `ACME_DNS_PROVIDER` | *(unset)* | For DNS-01: `cloudflare`, `hetzner` or `cpanel`. |
+| `ACME_DIRECTORY_URL` | Let's Encrypt production | ACME directory. Use `https://acme-staging-v02.api.letsencrypt.org/directory` while testing. |
 | `DATA_DIR` | `/data` | Directory of the SQLite database (`relay.db`). |
 | `SMTP_ENABLE_PORT25` | `false` | Enable the plain SMTP listener for trusted networks. |
 | `SMTP_LISTEN_465` | `:465` | Listen address, implicit TLS. |
@@ -149,12 +158,77 @@ Notes:
 
 - The certificate is reloaded on `SIGHUP` and within 30 seconds of the files
   changing. If the new files are invalid, the previous certificate stays.
+- The DNS-01 providers read further optional variables (TTL, propagation
+  timeout); see the [lego DNS provider documentation](https://go-acme.github.io/lego/dns/).
 - Rate limits are token buckets: a client may send its hourly amount in a
   burst and then refills evenly. Counters are in memory and reset on restart.
 - With smarthost credentials set, TLS with a verified certificate is
   mandatory and the relay never falls back to plaintext.
 - On `SIGTERM` the daemon stops accepting, gives open sessions and running
   deliveries 30 seconds, and exits. Queued mail survives restarts.
+
+## TLS certificates
+
+Ports 465 and 587 never run without a certificate. There are three ways to
+provide one. In every case the certificate must be for the name clients
+connect to.
+
+### 1. Bring your own certificate
+
+Set `TLS_CERT_FILE` and `TLS_KEY_FILE`. The files are reloaded on `SIGHUP`
+and within 30 seconds of changing, so any tool that renews them in place
+works without a restart.
+
+### 2. Built-in Let's Encrypt
+
+Set `ACME_ENABLED=true` and `ACME_AGREE_TOS=true` and leave the two file
+variables unset. At start the relay registers an account, proves control of
+each name in `ACME_DOMAINS` and stores the account key, certificate and key
+under `/data/acme` (mode `0600`). It checks twice a day and renews in the
+last third of the certificate's lifetime (30 days before expiry for a 90-day
+certificate). If a renewal fails it keeps serving the current certificate
+and tries again; if no valid certificate exists at start, it refuses to
+start. Use the staging `ACME_DIRECTORY_URL` while experimenting: production
+Let's Encrypt has strict rate limits.
+
+Control is proven with one of two challenges. Ports 465 and 587 cannot be
+used for this.
+
+**HTTP-01** (`ACME_CHALLENGE=http`, the default): Let's Encrypt fetches a
+token from `http://<name>/.well-known/acme-challenge/...`, so port 80 of each
+name must reach the relay from the internet. Publish it (`- "80:80"`) or
+forward it. The relay only listens on it during issuance.
+
+**DNS-01** (`ACME_CHALLENGE=dns`): the relay creates a temporary
+`_acme-challenge` TXT record through your DNS provider's API. No inbound port
+is needed, which suits hosts behind NAT. Set `ACME_DNS_PROVIDER` and the
+provider's credentials:
+
+| `ACME_DNS_PROVIDER` | Credentials |
+| --- | --- |
+| `cloudflare` | `CLOUDFLARE_DNS_API_TOKEN`: an API token with *Zone / DNS / Edit* on the zone (and *Zone / Zone / Read*). |
+| `hetzner` | `HETZNER_API_TOKEN`: a Hetzner Cloud API token (read and write) of the project that holds the DNS zone. |
+| `cpanel` | `CPANEL_USERNAME`, `CPANEL_TOKEN`, `CPANEL_BASE_URL` (for example `https://cpanel.example.com:2083`); `CPANEL_MODE=whm` for WHM. |
+
+These tokens can change DNS for the zone. Scope them to the one zone, and
+prefer HTTP-01 when port 80 is available.
+
+```yaml
+    environment:
+      SMTP_HOSTNAME: relay.example.com
+      ACME_ENABLED: "true"
+      ACME_AGREE_TOS: "true"
+      ACME_CHALLENGE: dns
+      ACME_DNS_PROVIDER: cloudflare
+      CLOUDFLARE_DNS_API_TOKEN: ${CLOUDFLARE_DNS_API_TOKEN}
+```
+
+### 3. An external ACME client
+
+For any other DNS provider or an existing setup, run certbot, acme.sh, lego,
+Caddy or Traefik yourself and point `TLS_CERT_FILE` / `TLS_KEY_FILE` at the
+files they maintain (readable by uid 10001). The relay picks up each renewal
+through the file reload described above.
 
 ## CLI reference
 

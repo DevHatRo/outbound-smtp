@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/mail"
@@ -14,9 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	legolog "github.com/go-acme/lego/v5/log"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/DevHatRO/outbound-smtp/internal/acmecert"
 	"github.com/DevHatRO/outbound-smtp/internal/config"
 	"github.com/DevHatRO/outbound-smtp/internal/delivery"
 	"github.com/DevHatRO/outbound-smtp/internal/dkim"
@@ -73,6 +76,26 @@ func (a *app) serve() error {
 		return fmt.Errorf("OpenTelemetry setup: %w", err)
 	}
 
+	// With ACME the certificate files are ours to create; from there on they
+	// are loaded and hot-reloaded exactly like an operator-supplied pair.
+	var certs *acmecert.Manager
+	if cfg.ACMEEnabled {
+		legolog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+		if certs, err = acmecert.New(cfg, log); err != nil {
+			return err
+		}
+		issueCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		_, err := certs.Ensure(issueCtx)
+		cancel()
+		if err != nil {
+			if !certs.Usable() {
+				return err
+			}
+			log.Error("certificate renewal failed at start, continuing with the existing certificate", zap.Error(err))
+		}
+		cfg.TLSCertFile, cfg.TLSKeyFile = certs.CertFile(), certs.KeyFile()
+	}
+
 	m := metrics.New(version)
 	m.RegisterQueue(func() (int64, int64, int64, error) {
 		s, err := st.QueueStats()
@@ -95,7 +118,7 @@ func (a *app) serve() error {
 
 	log.Info("outbound-smtp started", zap.String("version", version), zap.String("commit", commit),
 		zap.String("hostname", cfg.Hostname), zap.Bool("port25", cfg.EnablePort25), zap.Bool("smarthost", cfg.SmarthostHost != ""),
-		zap.Bool("tracing", tracing.Enabled()), zap.String("metrics", cfg.MetricsListen))
+		zap.Bool("tracing", tracing.Enabled()), zap.Bool("acme", cfg.ACMEEnabled), zap.String("metrics", cfg.MetricsListen))
 
 	go func() {
 		if err := m.Serve(ctx, metricsLn, st.Ping); err != nil {
@@ -103,6 +126,13 @@ func (a *app) serve() error {
 		}
 	}()
 	go srv.WatchCert(ctx)
+	if certs != nil {
+		go certs.Run(ctx, func() {
+			if err := srv.ReloadCert(); err != nil {
+				log.Error("load renewed TLS certificate", zap.Error(err))
+			}
+		})
+	}
 	queueDone := make(chan struct{})
 	go func() { q.Run(ctx); close(queueDone) }()
 

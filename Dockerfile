@@ -23,8 +23,9 @@ COPY --from=build /out/outbound-smtp /usr/local/bin/outbound-smtp
 USER 10001:10001
 ENV DATA_DIR=/data
 VOLUME /data
-# 465 and 587 always; 25 only with SMTP_ENABLE_PORT25=true; 9090 is /metrics, keep it private.
-EXPOSE 465 587 25 9090
+# 465 and 587 always; 25 only with SMTP_ENABLE_PORT25=true; 80 only for the
+# Let's Encrypt HTTP-01 challenge; 9090 is /metrics, keep it private.
+EXPOSE 465 587 25 80 9090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/usr/local/bin/outbound-smtp", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/outbound-smtp"]
 CMD ["serve"]

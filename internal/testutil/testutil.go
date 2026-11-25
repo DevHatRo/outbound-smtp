@@ -17,6 +17,11 @@ import (
 
 // WriteSelfSignedCert writes a throwaway certificate for localhost into dir.
 func WriteSelfSignedCert(dir string, notAfter time.Time) (certFile, keyFile string, err error) {
+	return WriteCert(dir, time.Now().Add(-time.Hour), notAfter, "localhost")
+}
+
+// WriteCert writes a self-signed certificate for the given names and validity.
+func WriteCert(dir string, notBefore, notAfter time.Time, names ...string) (certFile, keyFile string, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", err
@@ -24,9 +29,9 @@ func WriteSelfSignedCert(dir string, notAfter time.Time) (certFile, keyFile stri
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: "localhost"},
-		DNSNames:     []string{"localhost"},
+		DNSNames:     names,
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-		NotBefore:    time.Now().Add(-time.Hour),
+		NotBefore:    notBefore,
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},

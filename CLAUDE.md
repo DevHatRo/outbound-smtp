@@ -47,6 +47,10 @@ re-queued through the same path.
   the remote is permanent; everything else defers.
 - `internal/queue`: groups due recipients by (message, destination domain). Finished recipients are
   deleted (history is in the logs); in-flight state is memory-only, so a crash just leaves rows due.
+- `internal/acmecert`: optional Let's Encrypt via lego (HTTP-01, or DNS-01 with Cloudflare, Hetzner,
+  cPanel). It only writes `DATA_DIR/acme/{fullchain,privkey}.pem`; `serve` then points
+  `TLS_CERT_FILE`/`TLS_KEY_FILE` at them, so smtpd loads and hot-reloads them like an operator's own
+  pair. Verified manually against Pebble (not part of `go test`).
 - `internal/metrics`, `internal/tracing`: Prometheus on its own registry; OpenTelemetry via the global
   tracer (no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set). The trace context is stored in
   `messages.traceparent` so delivery spans join the submission trace.
