@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problem? Do not file it here, use "Report a security vulnerability" instead.
+        Please replace real domains, addresses, IPs and credentials with example.com / 192.0.2.x before posting.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `outbound-smtp version`, or the image tag
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, client used, and relevant environment variables (no secrets)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: JSON log lines for the affected queue ID, anonymised
+      render: json
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How do you run it?
+      options:
+        - Docker / Compose
+        - Kubernetes
+        - Binary
+        - Other
