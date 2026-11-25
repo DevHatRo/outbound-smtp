@@ -3,11 +3,12 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap/zapcore"
 )
 
 // Config is the boot-time configuration. Domains, keys, users and networks
@@ -40,8 +41,8 @@ type Config struct {
 	RateLimitNetworkPerHour int // RATE_LIMIT_NETWORK_PER_HOUR
 	AuthFailureLimit        int // AUTH_FAILURE_LIMIT (per IP per 10 minutes)
 
-	MetricsListen string     // METRICS_LISTEN
-	LogLevel      slog.Level // LOG_LEVEL
+	MetricsListen string        // METRICS_LISTEN
+	LogLevel      zapcore.Level // LOG_LEVEL
 }
 
 // Load reads the environment, applying defaults. It does not check the

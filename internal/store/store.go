@@ -5,8 +5,10 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -33,6 +35,16 @@ var ErrNotFound = errors.New("not found")
 
 // ErrExists is returned when a row with the same unique name already exists.
 var ErrExists = errors.New("already exists")
+
+// ErrInUse is returned when a row cannot be removed because another depends on it.
+var ErrInUse = errors.New("in use")
+
+// NewID returns a random 16-character queue ID.
+func NewID() string {
+	b := make([]byte, 10)
+	_, _ = rand.Read(b) // crypto/rand.Read never fails (Go 1.24+)
+	return base32.StdEncoding.EncodeToString(b)
+}
 
 // Store wraps the SQLite database.
 type Store struct {
@@ -198,9 +210,14 @@ func (s *Store) AddDomain(name string) error {
 	return err
 }
 
-// RemoveDomain deletes a domain and its DKIM keys.
+// RemoveDomain deletes a domain and its DKIM keys. It returns ErrInUse while
+// a trusted network is restricted to the domain.
 func (s *Store) RemoveDomain(name string) error {
-	return affected(s.db.Where("name = ?", name).Delete(&Domain{}))
+	err := affected(s.db.Where("name = ?", name).Delete(&Domain{}))
+	if err != nil && strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		return fmt.Errorf("a trusted network is restricted to it, remove that network first: %w", ErrInUse)
+	}
+	return err
 }
 
 // ListDomains returns all sending domains.

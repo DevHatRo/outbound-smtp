@@ -40,10 +40,12 @@ CREATE TABLE networks (
   created_at    INTEGER NOT NULL
 );
 
--- No rows for a network means any configured domain.
+-- No rows for a network means any configured domain. That is why domain_id
+-- does not cascade: deleting a domain must never silently turn a restricted
+-- network into an unrestricted one.
 CREATE TABLE network_domains (
   network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
-  domain_id  INTEGER NOT NULL REFERENCES domains(id)  ON DELETE CASCADE,
+  domain_id  INTEGER NOT NULL REFERENCES domains(id),
   PRIMARY KEY (network_id, domain_id)
 );
 

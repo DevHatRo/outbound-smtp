@@ -127,8 +127,10 @@ func TestNetworks(t *testing.T) {
 	if nets[0].CIDR != "192.0.2.0/24" || len(nets[0].DomainNames()) != 1 {
 		t.Errorf("network = %+v", nets[0])
 	}
-	// Removing the domain must not leave the network unrestricted by accident:
-	// the link row goes, which the relay rules treat separately (see smtpd).
+	// A restricted network must never become unrestricted by losing its domains.
+	if err := s.RemoveDomain("example.com"); !errors.Is(err, ErrInUse) {
+		t.Errorf("remove domain used by a network = %v, want ErrInUse", err)
+	}
 	if doms, _ := s.ListDomains(); len(doms) != 1 {
 		t.Errorf("AddNetwork must not duplicate domains: %v", doms)
 	}
