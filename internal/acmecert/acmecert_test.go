@@ -98,6 +98,32 @@ func TestIssueThenRenewInLastThirdOfLifetime(t *testing.T) {
 	}
 }
 
+func TestBrokenPairOnDiskIsReplaced(t *testing.T) {
+	m, ca, _ := setup(t)
+	ensure(t, m)
+	// A key that does not belong to the certificate, e.g. after a partial restore.
+	_, otherKey, err := testutil.WriteCert(t.TempDir(), time.Now().Add(-time.Minute), time.Now().Add(time.Hour), "relay.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(otherKey)
+	if err := os.WriteFile(m.KeyFile(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if m.Usable() {
+		t.Fatal("a certificate with someone else's key is not usable")
+	}
+	if !ensure(t, m) || ca.orders != 2 || !m.Usable() {
+		t.Errorf("a mismatched pair must be replaced (orders=%d)", ca.orders)
+	}
+	if err := os.Remove(m.KeyFile()); err != nil {
+		t.Fatal(err)
+	}
+	if !ensure(t, m) || ca.orders != 3 {
+		t.Errorf("a missing key must trigger a new certificate (orders=%d)", ca.orders)
+	}
+}
+
 func TestReissueWhenDomainsChange(t *testing.T) {
 	m, ca, _ := setup(t)
 	ensure(t, m)

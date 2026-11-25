@@ -94,7 +94,7 @@ func TestParsing(t *testing.T) {
 	if c.MaxMessageSize != 10<<20 || c.QueueMaxAge != 36*time.Hour || !c.EnablePort25 || c.LogLevel.String() != "debug" {
 		t.Errorf("parsed = %+v", c)
 	}
-	for name, bad := range map[string]string{"ACME_DNS_PROPAGATION_WAIT": "soon", "MAX_MESSAGE_SIZE": "lots", "QUEUE_MAX_AGE": "3 days", "SMTP_ENABLE_PORT25": "maybe",
+	for name, bad := range map[string]string{"ACME_DNS_PROPAGATION_WAIT": "soon", "MAX_MESSAGE_SIZE": "17179869184GB", "QUEUE_MAX_AGE": "3 days", "SMTP_ENABLE_PORT25": "maybe",
 		"LOG_LEVEL": "chatty", "MAX_RECIPIENTS": "0", "SMARTHOST_USERNAME": "user-without-password"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, bad)

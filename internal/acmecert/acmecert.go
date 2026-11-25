@@ -8,10 +8,9 @@ package acmecert
 import (
 	"context"
 	"crypto"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -63,38 +62,31 @@ func (m *Manager) CertFile() string { return filepath.Join(m.dir, "fullchain.pem
 // KeyFile is where the private key is written.
 func (m *Manager) KeyFile() string { return filepath.Join(m.dir, "privkey.pem") }
 
-// current returns the leaf certificate on disk, or nil.
+// current returns the leaf certificate on disk, or nil when the certificate
+// and key do not load as a matching pair (missing, damaged, or mixed up).
 func (m *Manager) current() *x509.Certificate {
-	data, err := os.ReadFile(m.CertFile())
+	pair, err := tls.LoadX509KeyPair(m.CertFile(), m.KeyFile())
 	if err != nil {
 		return nil
 	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	cert, err := x509.ParseCertificate(pair.Certificate[0])
 	if err != nil {
 		return nil
 	}
 	return cert
 }
 
-// Usable reports whether the certificate on disk can still serve TLS.
+// Usable reports whether the pair on disk can serve TLS right now.
 func (m *Manager) Usable() bool {
 	c := m.current()
-	if c == nil || !m.Now().Before(c.NotAfter) {
-		return false
-	}
-	_, err := os.Stat(m.KeyFile())
-	return err == nil
+	return c != nil && !m.Now().Before(c.NotBefore) && m.Now().Before(c.NotAfter)
 }
 
 // due reports whether a new certificate is needed, and why.
 func (m *Manager) due() (bool, string) {
 	c := m.current()
 	if c == nil {
-		return true, "no certificate yet"
+		return true, "no usable certificate and key on disk"
 	}
 	for _, d := range m.cfg.ACMEDomains {
 		if c.VerifyHostname(d) != nil {
@@ -123,9 +115,17 @@ func (m *Manager) Ensure(ctx context.Context) (renewed bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("obtain certificate for %v: %w", m.cfg.ACMEDomains, err)
 	}
-	// Key first: a reader that catches the pair half-written fails to load
-	// it and keeps the previous certificate until the next look.
-	if err := errors.Join(writeFile(m.KeyFile(), keyPEM), writeFile(m.CertFile(), certPEM)); err != nil {
+	// Never publish a pair that does not load.
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+		return false, fmt.Errorf("certificate authority returned an unusable pair: %w", err)
+	}
+	// Key first, and the certificate only if the key was written. A reader or
+	// a restart that catches a mixed pair fails to load it; the server keeps
+	// its loaded certificate and this manager requests a fresh pair.
+	if err := writeFile(m.KeyFile(), keyPEM); err != nil {
+		return false, err
+	}
+	if err := writeFile(m.CertFile(), certPEM); err != nil {
 		return false, err
 	}
 	if c := m.current(); c != nil {
