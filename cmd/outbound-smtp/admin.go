@@ -140,7 +140,9 @@ func (a *app) user(st *store.Store, args []string) error {
 	}
 	// Accepting these and changing only the password would leave the operator
 	// believing the user is now restricted.
-	if verb == "passwd" && (len(allow) > 0 || *rate != 0) {
+	rateGiven := false // "--rate 0" is a request too, and passwd cannot honour it
+	fs.Visit(func(f *flag.Flag) { rateGiven = rateGiven || f.Name == "rate" })
+	if verb == "passwd" && (len(allow) > 0 || rateGiven) {
 		return errors.New("user passwd only changes the password: --allow and --rate are set by 'user add' (remove and add the user to change them)")
 	}
 	userRate, err := rateFlag(*rate)

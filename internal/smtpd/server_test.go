@@ -297,6 +297,25 @@ func TestNeverAnOpenRelay(t *testing.T) {
 		defer e.st.RemoveNetwork(loopback) //nolint:errcheck // the later subtests must not find it
 		wantCode(t, "MAIL", c.Mail("app@example.com", nil), 550)
 	})
+	t.Run("network restored while the session is open", func(t *testing.T) {
+		// Trust comes and goes with the network, in both directions; what
+		// the session may send as is still the network's restriction.
+		c := e.dial(Listener25, false)
+		wantCode(t, "MAIL before trust", c.Mail("app@example.net", nil), 550)
+		e.trustLoopback("example.net")
+		defer e.st.RemoveNetwork(loopback) //nolint:errcheck // must not outlive the subtest
+		wantCode(t, "MAIL as another domain", c.Mail("app@example.com", nil), 550)
+		if err := c.Mail("app@example.net", nil); err != nil {
+			t.Fatalf("MAIL after the network was trusted: %v", err)
+		}
+		if err := c.Reset(); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.RemoveNetwork(loopback); err != nil {
+			t.Fatal(err)
+		}
+		wantCode(t, "MAIL after removal", c.Mail("app@example.net", nil), 550)
+	})
 	t.Run("removed user keeps only what the network allows", func(t *testing.T) {
 		hash, err := password.Hash(goodPassword)
 		if err != nil {

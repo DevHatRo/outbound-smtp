@@ -305,6 +305,9 @@ func TestBlockedDomainDoesNotStallOtherMail(t *testing.T) {
 	}
 	e.enqueue("OK1", "app@example.com", "ok@example.org")
 
+	// Rows are stamped with the wall clock: keep the fake clock ahead of it
+	// however long the enqueueing took.
+	e.now = time.Now().Add(2 * time.Second)
 	e.q.dispatch()
 	deadline := time.Now().Add(3 * time.Second)
 	for len(e.recipients("OK1")) != 0 && time.Now().Before(deadline) {
@@ -362,6 +365,21 @@ func TestStoreWriteFailureDoesNotRedeliver(t *testing.T) {
 	e.pass()
 	if left := e.recipients(""); len(left) != 0 || e.dl.calls != 3 {
 		t.Errorf("after the database recovered: queue = %+v, calls = %d; want empty and 3", left, e.dl.calls)
+	}
+}
+
+// A write that fails while a pass is still reading pages stops that pass too,
+// not only the next one.
+func TestNothingStartsOnceAnOutcomeIsUnwritten(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue("Q1", "app@example.com", "ok@example.org")
+	e.q.pending[recipientKey{id: 999, messageID: "GONE"}] = func() error { return errors.New("disk full") }
+	if e.q.dispatchPage() {
+		t.Error("the pass must end")
+	}
+	e.q.wg.Wait()
+	if e.dl.calls != 0 || len(e.recipients("Q1")) != 1 {
+		t.Errorf("a delivery started with an outcome still unwritten (%d calls)", e.dl.calls)
 	}
 }
 

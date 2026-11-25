@@ -307,20 +307,23 @@ func TestDirectDeliveryRefusesLocalAddresses(t *testing.T) {
 }
 
 func TestLoginAuth(t *testing.T) {
-	a := loginAuth{"user", "secret"}
-	if proto, first, err := a.Start(nil); proto != "LOGIN" || first != nil || err != nil {
-		t.Fatalf("Start = %q, %q, %v", proto, first, err)
-	}
-	for challenge, want := range map[string]string{"Username:": "user", "Password:": "secret", "password": "secret"} {
-		if got, err := a.Next([]byte(challenge), true); err != nil || string(got) != want {
-			t.Errorf("Next(%q) = %q, %v", challenge, got, err)
+	// Servers word the prompts differently, or send none: the answers go by position.
+	for _, prompts := range [][2]string{{"Username:", "Password:"}, {"User Name", "Password"}, {"", ""}} {
+		a := &loginAuth{username: "user", password: "secret"}
+		if proto, first, err := a.Start(nil); proto != "LOGIN" || first != nil || err != nil {
+			t.Fatalf("Start = %q, %q, %v", proto, first, err)
 		}
-	}
-	if _, err := a.Next([]byte("Token:"), true); err == nil {
-		t.Error("an unknown challenge must not be answered")
-	}
-	if got, err := a.Next(nil, false); got != nil || err != nil {
-		t.Errorf("Next at the end = %q, %v", got, err)
+		for i, want := range []string{"user", "secret"} {
+			if got, err := a.Next([]byte(prompts[i]), true); err != nil || string(got) != want {
+				t.Errorf("challenge %d %q: answered %q, %v; want %q", i+1, prompts[i], got, err, want)
+			}
+		}
+		if _, err := a.Next([]byte("Password:"), true); err == nil {
+			t.Errorf("%q: a third challenge must not be answered", prompts)
+		}
+		if got, err := a.Next(nil, false); got != nil || err != nil {
+			t.Errorf("Next at the end = %q, %v", got, err)
+		}
 	}
 }
 

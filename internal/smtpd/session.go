@@ -67,13 +67,11 @@ func userPrincipal(u store.User) *principal {
 
 // refresh re-reads the session's principal, so that removing or restricting
 // a user or a network through the CLI also applies to sessions that are
-// already open. A removed user is left with what the client address allows.
+// already open. A removed user is left with what the client address allows,
+// and a session without a principal gets one when its network is trusted
+// meanwhile: the answer is the one a new connection would get.
 func (s *session) refresh() (*principal, error) {
-	who := s.who
-	if who == nil {
-		return nil, nil
-	}
-	if who.source == store.SourceAuth {
+	if who := s.who; who != nil && who.source == store.SourceAuth {
 		u, err := s.s.st.GetUser(who.ident)
 		if err == nil {
 			return userPrincipal(u), nil

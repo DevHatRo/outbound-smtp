@@ -58,7 +58,7 @@ func TestAdminCLI(t *testing.T) {
 		t.Errorf("passwd --generate = %q", out)
 	}
 	// passwd must not look as if it restricted the user.
-	for _, extra := range [][]string{{"--allow", "example.com"}, {"--rate", "5"}} {
+	for _, extra := range [][]string{{"--allow", "example.com"}, {"--rate", "5"}, {"--rate", "0"}} {
 		args := append([]string{"user", "passwd", "--generate", "app"}, extra...)
 		if _, errOut, code := cli(t, "", args...); code == 0 || !strings.Contains(errOut, "only changes the password") {
 			t.Errorf("%v must be refused: %q", args, errOut)

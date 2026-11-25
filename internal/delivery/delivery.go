@@ -100,23 +100,31 @@ func refuseLocal(_, address string, _ syscall.RawConn) error {
 // loginAuth is AUTH LOGIN, which net/smtp leaves out and some providers
 // offer as their only mechanism. Like smtp.PlainAuth it sends the password
 // as it is; session only uses it over verified TLS.
-type loginAuth struct{ username, password string }
+//
+// The answers go by position, not by the prompt: servers word the two
+// challenges differently ("Username:", "User Name", nothing at all).
+type loginAuth struct {
+	username, password string
+	step               int
+}
 
-func (a loginAuth) Start(*smtp.ServerInfo) (proto string, toServer []byte, err error) {
+func (a *loginAuth) Start(*smtp.ServerInfo) (proto string, toServer []byte, err error) {
+	a.step = 0
 	return "LOGIN", nil, nil
 }
 
-func (a loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+func (a *loginAuth) Next(_ []byte, more bool) ([]byte, error) {
 	if !more {
 		return nil, nil
 	}
-	switch strings.ToLower(strings.TrimSuffix(strings.TrimSpace(string(fromServer)), ":")) {
-	case "username":
+	a.step++
+	switch a.step {
+	case 1:
 		return []byte(a.username), nil
-	case "password":
+	case 2:
 		return []byte(a.password), nil
 	}
-	return nil, errors.New("unexpected AUTH LOGIN challenge")
+	return nil, errors.New("unexpected third AUTH LOGIN challenge")
 }
 
 // errTLS marks a failed opportunistic STARTTLS, after which the same host is
@@ -263,7 +271,7 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 		// PlainAuth itself also refuses to run without TLS.
 		auth := smtp.PlainAuth("", c.cfg.SmarthostUsername, c.cfg.SmarthostPassword, host)
 		if _, mechs := cl.Extension("AUTH"); usedTLS && !slices.Contains(strings.Fields(mechs), "PLAIN") && slices.Contains(strings.Fields(mechs), "LOGIN") {
-			auth = loginAuth{c.cfg.SmarthostUsername, c.cfg.SmarthostPassword}
+			auth = &loginAuth{username: c.cfg.SmarthostUsername, password: c.cfg.SmarthostPassword}
 		}
 		if err := cl.Auth(auth); err != nil {
 			return nil, fmt.Errorf("smarthost authentication at %s: %w", host, err)

@@ -227,8 +227,14 @@ func (q *Queue) dispatchPage() bool {
 	for _, g := range groups {
 		key := g.messageID + "\x00" + g.domain
 		q.mu.Lock()
+		unwritten := len(q.pending) > 0
 		busy := q.inFlight[key] || q.perDomain[g.domain] >= q.cfg.DeliveryConcurrencyPerDomain
 		q.mu.Unlock()
+		if unwritten {
+			// An attempt started earlier in this pass could not record its
+			// outcome. Start nothing more; the next dispatch flushes first.
+			return false
+		}
 		if busy {
 			continue
 		}
