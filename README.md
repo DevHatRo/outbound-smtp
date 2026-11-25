@@ -134,6 +134,7 @@ SQLite; CLI changes take effect without a restart.
 | `ACME_DIRECTORY_URL` | Let's Encrypt production | ACME directory. Use `https://acme-staging-v02.api.letsencrypt.org/directory` while testing. |
 | `DATA_DIR` | `/data` | Directory of the SQLite database (`relay.db`). |
 | `SMTP_ENABLE_PORT25` | `false` | Enable the plain SMTP listener for trusted networks. |
+| `SMTP_PORT25_STARTTLS` | `true` | Offer STARTTLS on port 25. Set `false` for a plaintext-only port 25; see [Migrating from Postfix](#migrating-from-postfix). |
 | `SMTP_LISTEN_465` | `:465` | Listen address, implicit TLS. |
 | `SMTP_LISTEN_587` | `:587` | Listen address, STARTTLS required. |
 | `SMTP_LISTEN_25` | `:25` | Listen address when port 25 is enabled. |
@@ -431,6 +432,14 @@ Steps:
    `spf=pass` and `dmarc=pass` in the received headers.
 4. Let the Postfix queue drain (`mailq`), then switch clients over and stop
    Postfix.
+
+Applications that send to port 25 without TLS keep working unchanged: enable
+port 25 and add their addresses with `network add`. One catch: many clients
+(Nodemailer, Grafana and others) upgrade to STARTTLS whenever a server offers
+it and then verify the certificate, which fails if they connect by IP or by a
+name that is not on the certificate. If your Postfix did not offer STARTTLS,
+set `SMTP_PORT25_STARTTLS=false` so port 25 behaves the same; ports 465 and
+587 are not affected.
 
 Differences to be aware of: no `sendmail` binary or pickup directory (use
 SMTP), no header or address rewriting, no content filters or milters, no

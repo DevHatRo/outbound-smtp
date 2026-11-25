@@ -105,9 +105,12 @@ func (s *Server) Start() error {
 		srv.WriteTimeout = time.Minute
 		srv.AllowInsecureAuth = false
 		srv.ErrorLog = zapPrintf{s.log.With(zap.String("listener", sp.name))}
-		if implicit {
+		switch {
+		case implicit:
 			ln = tls.NewListener(ln, s.certs.tlsConfig())
-		} else {
+		case sp.name == Listener25 && !s.cfg.Port25StartTLS:
+			// Plaintext only: STARTTLS is not advertised. 587 never takes this path.
+		default:
 			srv.TLSConfig = s.certs.tlsConfig() // offered through STARTTLS
 		}
 		s.servers = append(s.servers, srv)

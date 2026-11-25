@@ -7,13 +7,16 @@ import (
 )
 
 func TestDefaultsAreSafe(t *testing.T) {
-	for _, name := range []string{"SMTP_HOSTNAME", "SMTP_ENABLE_PORT25", "TLS_CERT_FILE", "TLS_KEY_FILE", "DATA_DIR", "MAX_MESSAGE_SIZE",
+	for _, name := range []string{"SMTP_HOSTNAME", "SMTP_ENABLE_PORT25", "SMTP_PORT25_STARTTLS", "TLS_CERT_FILE", "TLS_KEY_FILE", "DATA_DIR", "MAX_MESSAGE_SIZE",
 		"QUEUE_MAX_AGE", "SMARTHOST_HOST", "SMARTHOST_USERNAME", "SMARTHOST_PASSWORD", "METRICS_LISTEN", "LOG_LEVEL", "DELIVERY_IPV6"} {
 		t.Setenv(name, "")
 	}
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !c.Port25StartTLS {
+		t.Error("STARTTLS on port 25 must be offered by default")
 	}
 	if c.EnablePort25 || c.DeliveryIPv6 || c.SmarthostHost != "" {
 		t.Errorf("port 25, IPv6 delivery and smarthost must be off by default: %+v", c)

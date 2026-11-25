@@ -56,7 +56,7 @@ func start(t *testing.T, tweak func(*config.Config)) *env {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Hostname: "relay.example.com", EnablePort25: true,
+		Hostname: "relay.example.com", EnablePort25: true, Port25StartTLS: true,
 		Listen465: "127.0.0.1:0", Listen587: "127.0.0.1:0", Listen25: "127.0.0.1:0",
 		TLSCertFile: certFile, TLSKeyFile: keyFile,
 		MaxMessageSize: 1 << 20, MaxRecipients: 10, MaxConnectionsPerIP: 50,
@@ -332,6 +332,29 @@ func TestTrustedNetwork(t *testing.T) {
 	if m.Source != store.SourceNetwork || m.SourceIdent != "127.0.0.0/8" || !strings.Contains(string(m.Body), " with ESMTP id ") {
 		t.Errorf("message = %+v", m)
 	}
+}
+
+func TestPort25WithoutSTARTTLS(t *testing.T) {
+	e := start(t, func(c *config.Config) { c.Port25StartTLS = false })
+	c := e.dial(Listener25, false)
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		t.Error("STARTTLS advertised on port 25 although it is switched off")
+	}
+	if c.SupportsAuth(sasl.Plain) {
+		t.Error("AUTH offered on port 25")
+	}
+	// Still no open relay, and still usable by a trusted network.
+	wantCode(t, "untrusted", send(c, "app@example.com", "rcpt@example.org", goodMessage), 550)
+	e.trustLoopback()
+	if err := send(e.dial(Listener25, false), "app@example.com", "rcpt@example.org", goodMessage); err != nil {
+		t.Fatalf("trusted plaintext send: %v", err)
+	}
+	// The switch must not weaken 587: STARTTLS is still offered and required there.
+	sub := e.dial(Listener587, false)
+	if ok, _ := sub.Extension("STARTTLS"); !ok {
+		t.Error("587 must keep offering STARTTLS")
+	}
+	wantCode(t, "587 plaintext", sub.Mail("app@example.com", nil), 530)
 }
 
 func TestLimits(t *testing.T) {

@@ -31,12 +31,15 @@ func ReceivedHeader(hostname, with, queueID string, now time.Time) string {
 type Config struct {
 	Hostname     string // SMTP_HOSTNAME
 	EnablePort25 bool   // SMTP_ENABLE_PORT25
-	Listen465    string // SMTP_LISTEN_465
-	Listen587    string // SMTP_LISTEN_587
-	Listen25     string // SMTP_LISTEN_25
-	TLSCertFile  string // TLS_CERT_FILE
-	TLSKeyFile   string // TLS_KEY_FILE
-	DataDir      string // DATA_DIR
+	// Port25StartTLS offers STARTTLS on port 25. Turn it off for clients
+	// that upgrade opportunistically and then reject the certificate.
+	Port25StartTLS bool   // SMTP_PORT25_STARTTLS
+	Listen465      string // SMTP_LISTEN_465
+	Listen587      string // SMTP_LISTEN_587
+	Listen25       string // SMTP_LISTEN_25
+	TLSCertFile    string // TLS_CERT_FILE
+	TLSKeyFile     string // TLS_KEY_FILE
+	DataDir        string // DATA_DIR
 
 	// Let's Encrypt (or another ACME CA) instead of TLS_CERT_FILE/TLS_KEY_FILE.
 	ACMEEnabled      bool     // ACME_ENABLED
@@ -79,14 +82,15 @@ type Config struct {
 func Load() (*Config, error) {
 	l := loader{}
 	c := &Config{
-		Hostname:     l.str("SMTP_HOSTNAME", ""),
-		EnablePort25: l.boolean("SMTP_ENABLE_PORT25", false),
-		Listen465:    l.str("SMTP_LISTEN_465", ":465"),
-		Listen587:    l.str("SMTP_LISTEN_587", ":587"),
-		Listen25:     l.str("SMTP_LISTEN_25", ":25"),
-		TLSCertFile:  l.str("TLS_CERT_FILE", ""),
-		TLSKeyFile:   l.str("TLS_KEY_FILE", ""),
-		DataDir:      l.str("DATA_DIR", "/data"),
+		Hostname:       l.str("SMTP_HOSTNAME", ""),
+		EnablePort25:   l.boolean("SMTP_ENABLE_PORT25", false),
+		Port25StartTLS: l.boolean("SMTP_PORT25_STARTTLS", true),
+		Listen465:      l.str("SMTP_LISTEN_465", ":465"),
+		Listen587:      l.str("SMTP_LISTEN_587", ":587"),
+		Listen25:       l.str("SMTP_LISTEN_25", ":25"),
+		TLSCertFile:    l.str("TLS_CERT_FILE", ""),
+		TLSKeyFile:     l.str("TLS_KEY_FILE", ""),
+		DataDir:        l.str("DATA_DIR", "/data"),
 
 		ACMEEnabled:      l.boolean("ACME_ENABLED", false),
 		ACMEAgreeTOS:     l.boolean("ACME_AGREE_TOS", false),
