@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/DevHatRO/outbound-smtp/internal/config"
 	"github.com/DevHatRO/outbound-smtp/internal/delivery"
 	"github.com/DevHatRO/outbound-smtp/internal/dkim"
 	"github.com/DevHatRO/outbound-smtp/internal/metrics"
@@ -193,7 +194,7 @@ func (a *app) sendTest(st *store.Store, args []string) error {
 		host = domain
 	}
 	now := time.Now()
-	msg := fmt.Sprintf("From: <%s>\r\nTo: <%s>\r\nSubject: outbound-smtp test message %s\r\nDate: %s\r\nMessage-ID: <%s@%s>\r\n"+
+	msg := config.ReceivedHeader(host, "", id, now) + fmt.Sprintf("From: <%s>\r\nTo: <%s>\r\nSubject: outbound-smtp test message %s\r\nDate: %s\r\nMessage-ID: <%s@%s>\r\n"+
 		"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"+
 		"This is a test message from outbound-smtp, queued at %s with queue ID %s.\r\n"+
 		"If it arrived, check that the receiving server reports dkim=pass for %s.\r\n",

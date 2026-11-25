@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DevHatRO/outbound-smtp/internal/config"
 	"github.com/DevHatRO/outbound-smtp/internal/store"
 )
 
@@ -55,8 +56,7 @@ func prepare(raw []byte, queueID, hostname, with string, now time.Time) (out []b
 	header, body := splitMessage(raw)
 	date := now.Format("Mon, 02 Jan 2006 15:04:05 -0700")
 	var b bytes.Buffer
-	// No client IP or HELO name: they would leak internal addresses to recipients.
-	fmt.Fprintf(&b, "Received: by %s (outbound-smtp) with %s id %s;\r\n\t%s\r\n", hostname, with, queueID, date)
+	b.WriteString(config.ReceivedHeader(hostname, with, queueID, now))
 	if msg.Header.Get("Date") == "" {
 		fmt.Fprintf(&b, "Date: %s\r\n", date)
 	}

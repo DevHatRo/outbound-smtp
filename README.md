@@ -119,7 +119,7 @@ SQLite; CLI changes take effect without a restart.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SMTP_HOSTNAME` | *(required)* | Name used in EHLO, `Received` and `Message-ID`. Must match the PTR record of the sending IP. |
+| `SMTP_HOSTNAME` | *(required)* | Name used in EHLO, `Received` and `Message-ID`. Every message carries a `Received: by <hostname> (DevHatRO SMTP) ...` field identifying the relay. Must match the PTR record of the sending IP. |
 | `TLS_CERT_FILE` | *(required)* | PEM certificate chain. The daemon does not start without a valid, unexpired certificate. |
 | `TLS_KEY_FILE` | *(required)* | PEM private key. |
 | `DATA_DIR` | `/data` | Directory of the SQLite database (`relay.db`). |

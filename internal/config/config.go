@@ -11,6 +11,21 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// Identifier names the software in the Received header of every message.
+const Identifier = "DevHatRO SMTP"
+
+// ReceivedHeader returns the Received field (with CRLF) that marks a message
+// as handled by this relay. with is the protocol keyword (ESMTPSA, ...), or ""
+// for messages the relay generated itself. It carries no client address:
+// that would leak internal IPs to recipients.
+func ReceivedHeader(hostname, with, queueID string, now time.Time) string {
+	if with != "" {
+		with = " with " + with
+	}
+	return fmt.Sprintf("Received: by %s (%s)%s id %s;\r\n\t%s\r\n", hostname, Identifier, with, queueID,
+		now.Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+}
+
 // Config is the boot-time configuration. Domains, keys, users and networks
 // live in SQLite and are managed by the CLI.
 type Config struct {

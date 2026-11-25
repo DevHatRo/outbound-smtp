@@ -162,8 +162,9 @@ func TestDKIMCLI(t *testing.T) {
 	if list := mustCLI(t, "", "queue", "list"); !strings.Contains(list, id) || !strings.Contains(list, "rcpt@example.org") {
 		t.Errorf("queue list = %s", list)
 	}
-	if raw := mustCLI(t, "", "queue", "show", id, "--raw"); !strings.HasPrefix(raw, "DKIM-Signature:") || !strings.Contains(raw, "s=one;") {
-		t.Errorf("test message is not signed with the active selector:\n%s", raw)
+	if raw := mustCLI(t, "", "queue", "show", id, "--raw"); !strings.HasPrefix(raw, "DKIM-Signature:") || !strings.Contains(raw, "s=one;") ||
+		!strings.Contains(raw, "(DevHatRO SMTP) id "+id+";") {
+		t.Errorf("test message lacks the signature of the active selector or the relay identifier:\n%s", raw)
 	}
 	mustCLI(t, "", "queue", "show", id)
 	mustCLI(t, "", "queue", "retry", id)

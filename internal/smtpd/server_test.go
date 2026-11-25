@@ -285,7 +285,7 @@ func TestAuthenticatedSubmission(t *testing.T) {
 	if m.Source != store.SourceAuth || m.SourceIdent != "app" || m.FromDomain != "example.com" || q[0].Domain != "example.org" {
 		t.Errorf("message = %+v, recipient = %+v", m, q[0])
 	}
-	for _, want := range []string{"X-Signed-For: example.com\r\n", "Received: by relay.example.com (outbound-smtp) with ESMTPSA id " + m.ID,
+	for _, want := range []string{"X-Signed-For: example.com\r\n", "Received: by relay.example.com (DevHatRO SMTP) with ESMTPSA id " + m.ID,
 		"\r\nDate: ", "\r\nMessage-ID: <" + strings.ToLower(m.ID) + "@relay.example.com>\r\n", "\r\n\r\nbody\r\n"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("stored message lacks %q:\n%s", want, body)
@@ -486,7 +486,7 @@ func TestPrepare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Received: by relay.example.com (outbound-smtp) with ESMTPS id QID;\r\n\tFri, 02 Jan 2026 03:04:05 +0000\r\n" +
+	want := "Received: by relay.example.com (DevHatRO SMTP) with ESMTPS id QID;\r\n\tFri, 02 Jan 2026 03:04:05 +0000\r\n" +
 		"From: a@example.com\r\nSubject: folded\r\n continuation\r\nDate: Thu, 01 Jan 2026 00:00:00 +0000\r\nMessage-ID: <keep@example.com>\r\n" +
 		"\r\nline1\r\nBcc: not a header\r\n"
 	if string(out) != want || addr != "a@example.com" || domain != "example.com" {

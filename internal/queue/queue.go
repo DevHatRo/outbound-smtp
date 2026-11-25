@@ -282,7 +282,9 @@ func (q *Queue) bounce(ctx context.Context, msg store.Message, failures []delive
 		q.log.Warn("bounce message undeliverable, dropped", zap.String("queue_id", msg.ID))
 		return nil
 	}
-	dsn := delivery.BuildDSN(q.cfg.Hostname, msg, failures, q.Now())
+	id := store.NewID()
+	dsn := append([]byte(config.ReceivedHeader(q.cfg.Hostname, "", id, q.Now())),
+		delivery.BuildDSN(q.cfg.Hostname, msg, failures, q.Now())...)
 	signed, err := q.signer.Sign(msg.FromDomain, dsn)
 	if err != nil {
 		q.m.DKIMSign.WithLabelValues(msg.FromDomain, "error").Inc()
@@ -293,7 +295,6 @@ func (q *Queue) bounce(ctx context.Context, msg store.Message, failures []delive
 		return nil
 	}
 	q.m.DKIMSign.WithLabelValues(msg.FromDomain, "ok").Inc()
-	id := store.NewID()
 	if err := q.st.Enqueue(store.Message{ID: id, EnvelopeFrom: "", FromDomain: msg.FromDomain, Source: store.SourceInternal,
 		SourceIdent: "dsn", Body: signed, Traceparent: tracing.Inject(ctx)}, []string{msg.EnvelopeFrom}); err != nil {
 		span.SetStatus(codes.Error, err.Error())

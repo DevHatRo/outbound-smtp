@@ -177,7 +177,8 @@ func TestPermanentFailureBouncesToSender(t *testing.T) {
 	if dsn.EnvelopeFrom != "" || dsn.Source != store.SourceInternal || dsn.FromDomain != "example.com" {
 		t.Errorf("bounce = %+v", dsn)
 	}
-	for _, want := range []string{"X-Signed-For: example.com\r\n", "postmaster@example.com", "Final-Recipient: rfc822; bounce@example.org",
+	for _, want := range []string{"X-Signed-For: example.com\r\nReceived: by relay.example.com (DevHatRO SMTP) id " + dsn.ID + ";",
+		"postmaster@example.com", "Final-Recipient: rfc822; bounce@example.org",
 		"Status: 5.1.1", "550 5.1.1 User unknown"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("bounce lacks %q", want)
