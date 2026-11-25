@@ -3,6 +3,7 @@ module github.com/DevHatRO/outbound-smtp
 go 1.27.4
 
 require (
+	github.com/emersion/go-msgauth v0.7.0
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/emersion/go-smtp v0.26.0
 	github.com/prometheus/client_golang v1.25.0

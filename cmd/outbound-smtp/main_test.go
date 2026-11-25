@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -89,4 +91,65 @@ func TestAdminCLI(t *testing.T) {
 	if out := mustCLI(t, "", "version"); !strings.Contains(out, "outbound-smtp dev") {
 		t.Errorf("version = %q", out)
 	}
+}
+
+func TestDKIMCLI(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	published := map[string]string{} // fake DNS
+	orig := lookupTXT
+	lookupTXT = func(_ context.Context, name string) ([]string, error) {
+		if v, ok := published[name]; ok {
+			return []string{v}, nil
+		}
+		return nil, errors.New("NXDOMAIN")
+	}
+	t.Cleanup(func() { lookupTXT = orig })
+	// publish copies the "Value:" line of a command's output into the fake DNS.
+	publish := func(out, name string) {
+		t.Helper()
+		_, rest, ok := strings.Cut(out, "Value: ")
+		if !ok {
+			t.Fatalf("no record in output: %s", out)
+		}
+		published[name], _, _ = strings.Cut(rest, "\n")
+	}
+
+	if _, _, code := cli(t, "", "dkim", "generate", "example.com"); code == 0 {
+		t.Fatal("generate for an unconfigured domain must fail")
+	}
+	mustCLI(t, "", "domain", "add", "example.com")
+	out := mustCLI(t, "", "dkim", "generate", "example.com", "--selector", "one")
+	if !strings.Contains(out, "one._domainkey.example.com") || !strings.Contains(out, "v=DKIM1; k=rsa; p=") || strings.Contains(out, "PRIVATE") {
+		t.Fatalf("generate output: %s", out)
+	}
+	if _, _, code := cli(t, "", "dkim", "verify", "example.com"); code == 0 {
+		t.Error("verify must fail before the record is published")
+	}
+	publish(out, "one._domainkey.example.com")
+	mustCLI(t, "", "dkim", "verify", "example.com")
+
+	// Rotation: step 1 generates an inactive key, step 2 refuses until DNS matches.
+	out = mustCLI(t, "", "dkim", "rotate", "example.com", "--algorithm", "ed25519", "--selector", "two")
+	if _, _, code := cli(t, "", "dkim", "rotate", "example.com", "--selector", "two"); code == 0 {
+		t.Fatal("switching to an unpublished selector must fail")
+	}
+	if !strings.Contains(out, "Step 1 of 2") || !strings.Contains(out, "k=ed25519") {
+		t.Fatalf("rotate step 1 output: %s", out)
+	}
+	if list := mustCLI(t, "", "domain", "list"); !strings.Contains(list, "one (rsa)") {
+		t.Fatalf("the old key must keep signing until DNS is ready: %s", list)
+	}
+	if _, errOut, code := cli(t, "", "dkim", "rotate", "example.com"); code == 0 || !strings.Contains(errOut, "not switching") {
+		t.Fatalf("rotate must refuse an unpublished selector: %s", errOut)
+	}
+	publish(out, "two._domainkey.example.com")
+	mustCLI(t, "", "dkim", "rotate", "example.com")
+	if list := mustCLI(t, "", "domain", "list"); !strings.Contains(list, "two (ed25519)") {
+		t.Fatalf("rotation did not switch the active key: %s", list)
+	}
+	if show := mustCLI(t, "", "dkim", "show", "example.com"); strings.Count(show, "selector ") != 2 || strings.Count(show, "ACTIVE") != 1 {
+		t.Errorf("show should list both selectors with one active: %s", show)
+	}
+	// Switching back to a named selector works the same way.
+	mustCLI(t, "", "dkim", "rotate", "example.com", "--selector", "one")
 }
