@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/DevHatRo/outbound-smtp/compare/v1.0.1...v1.1.0) (2026-11-25)
+
+
+### Features
+
+* add LOG_RECIPIENTS to log full recipient addresses ([#5](https://github.com/DevHatRo/outbound-smtp/issues/5)) ([12b09de](https://github.com/DevHatRo/outbound-smtp/commit/12b09dedc4faa28d056893d377b3d6ab41b1963c))
+
 ## [1.0.1](https://github.com/DevHatRo/outbound-smtp/compare/v1.0.0...v1.0.1) (2026-11-25)
 
 
