@@ -1,4 +1,5 @@
 version: 2
+# One grouped PR per ecosystem for minor and patch updates, one for majors.
 updates:
   # "fix" so that dependency updates in the shipped binary and image produce a release.
   - package-ecosystem: gomod
@@ -9,8 +10,10 @@ updates:
       prefix: fix
       include: scope
     groups:
-      opentelemetry:
-        patterns: ["go.opentelemetry.io/*"]
+      go-minor-patch:
+        update-types: ["minor", "patch"]
+      go-major:
+        update-types: ["major"]
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -18,6 +21,11 @@ updates:
     commit-message:
       prefix: fix
       include: scope
+    groups:
+      docker-minor-patch:
+        update-types: ["minor", "patch"]
+      docker-major:
+        update-types: ["major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -25,3 +33,8 @@ updates:
     commit-message:
       prefix: ci
       include: scope
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
+      actions-major:
+        update-types: ["major"]
