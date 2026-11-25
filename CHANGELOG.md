@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/DevHatRo/outbound-smtp/compare/v1.1.0...v2.0.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **relay:** rate limits (RATE_LIMIT_*_PER_HOUR and --rate) count recipients, not messages. Smarthosts require a certificate valid for SMARTHOST_HOST and never fall back to plaintext, with or without credentials.
+
+### Bug Fixes
+
+* **relay:** close audit findings in queue, limits, smarthost TLS and DKIM ([#7](https://github.com/DevHatRo/outbound-smtp/issues/7)) ([03f3d14](https://github.com/DevHatRo/outbound-smtp/commit/03f3d14416ab19b84206453d5d2127c112752d5e))
+
 ## [1.1.0](https://github.com/DevHatRo/outbound-smtp/compare/v1.0.1...v1.1.0) (2026-11-25)
 
 
