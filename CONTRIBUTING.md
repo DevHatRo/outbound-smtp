@@ -76,5 +76,7 @@ These settings live in GitHub, not in the repository:
   *Packages* settings; new GHCR packages start private.
 - **Release pull request checks**: pull requests opened with the built-in
   `GITHUB_TOKEN` do not trigger workflows, so CI does not start on the
-  release-please pull request by itself. Close and reopen it to run the
-  required check before merging.
+  release-please pull request by itself. Either close and reopen it to run
+  the required check, or add a repository secret `RELEASE_PLEASE_TOKEN`
+  (preferably a GitHub App installation token with contents and pull-request
+  write access); the release workflow uses it when present.

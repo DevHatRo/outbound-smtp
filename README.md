@@ -275,10 +275,14 @@ Rotation takes two steps so that mail is never signed with a selector that is
 not in DNS yet:
 
 ```sh
-relay dkim rotate example.com   # 1: creates a new inactive key, prints its record
+relay dkim rotate example.com --selector s2   # 1: creates a new inactive key, prints its record
 # publish the record, wait for DNS
-relay dkim rotate example.com   # 2: verifies DNS, then switches signing to it
+relay dkim rotate example.com --selector s2   # 2: verifies DNS, then switches signing to it
 ```
+
+Without `--selector` the new key is named after the date (`sYYYYMMDD`), which
+fails if the current key was created the same day. Selectors are stored in
+lower case.
 
 Keep the old selector's record published for about a week; mail signed with
 it may still be in transit. RSA-2048 is the default. Ed25519 keys are smaller
@@ -295,6 +299,8 @@ For each sending domain (`example.com`) and the relay host
 - [ ] **SPF**: a TXT record on `example.com` that authorises the sending IP,
       for example `v=spf1 ip4:192.0.2.10 -all` (merge with an existing SPF
       record; a domain must have only one).
+      With `SMARTHOST_HOST` the smarthost is what receivers see: authorise its
+      addresses instead, usually with the `include:` its operator documents.
 - [ ] **DKIM**: the TXT record printed by `dkim generate`, at
       `<selector>._domainkey.example.com`. Confirm with `dkim verify`.
 - [ ] **DMARC**: a TXT record at `_dmarc.example.com`, starting with
@@ -316,8 +322,11 @@ per delivery attempt:
 {"level":"info","time":"...","msg":"delivery attempt","queue_id":"ILF4UHF7JRE6FWZ5","sender":"app@example.com","recipient_domain":"example.org","result":"delivered","response":"250 2.0.0 Ok: queued","remote_host":"mx.example.org","tls":true,"attempt":1,"trace_id":""}
 ```
 
-Passwords and message bodies are never logged. Recipients appear by domain
-only; use `queue list` for full addresses of mail still in the queue.
+Passwords and message bodies are never logged. The relay itself records
+recipients by domain only, and removes the recipient's address from the
+remote server's reply before logging it. Other text a remote server puts in
+its reply is logged as received. Use `queue list` for full addresses of mail
+still in the queue.
 
 ## Prometheus metrics
 
@@ -373,7 +382,11 @@ groups:
         annotations:
           summary: The relay TLS certificate expires in under 14 days
       - alert: SmtpRelayDkimFailing
-        expr: increase(smtprelay_dkim_sign_total{result="error"}[15m]) > 0
+        # The second half catches the very first failure, when the series is new
+        # and increase() has nothing to compare with.
+        expr: |
+          increase(smtprelay_dkim_sign_total{result="error"}[15m]) > 0
+            or (smtprelay_dkim_sign_total{result="error"} unless smtprelay_dkim_sign_total{result="error"} offset 15m)
         annotations:
           summary: Messages are being refused because DKIM signing fails
 ```
@@ -401,8 +414,9 @@ message):
 | `smtp.reject` | A transaction is refused (separate short trace) |
 
 Spans carry the queue ID, envelope sender, sending domain, recipient
-*domain*, result and remote response. Full recipient addresses are not
-exported. Log lines include `trace_id` for correlation. Only OTLP/HTTP is
+*domain*, result and remote response. The relay does not export recipient
+addresses and strips the recipient's address from remote replies; anything
+else a remote server writes in its reply is exported as received. Log lines include `trace_id` for correlation. Only OTLP/HTTP is
 supported; point it at a collector if your backend needs gRPC.
 
 ## Migrating from Postfix
@@ -431,11 +445,15 @@ Steps:
    network entry.
 3. Send a `send-test` to a mailbox you control and check for `dkim=pass`,
    `spf=pass` and `dmarc=pass` in the received headers.
-4. Let the Postfix queue drain (`mailq`), then switch clients over and stop
-   Postfix.
+4. Switch the clients over first. Only then let the Postfix queue drain
+   (`mailq` until it is empty) and stop Postfix: a client that still submits
+   to Postfix after you checked would leave mail behind in its queue.
 
-Applications that send to port 25 without TLS keep working unchanged: enable
-port 25 and add their addresses with `network add`. One catch: many clients
+Applications that send to port 25 without TLS keep working unchanged: set
+`SMTP_ENABLE_PORT25=true`, publish the port (the quick-start Compose file
+does not; add `- "25:25"`, ideally bound to a private address), and add the
+clients' addresses with `network add`. Read
+[Trusted networks and Docker](#trusted-networks-and-docker) first. One catch: many clients
 (Nodemailer, Grafana and others) upgrade to STARTTLS whenever a server offers
 it and then verify the certificate, which fails if they connect by IP or by a
 name that is not on the certificate. If your Postfix did not offer STARTTLS,

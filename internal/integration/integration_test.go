@@ -269,6 +269,19 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// One trace follows the message from submission to delivery and bounce.
+	// A span ends just after its recipient row is removed, so wait for the last one.
+	for time.Now().Before(deadline) {
+		n := 0
+		for _, s := range spans.GetSpans() {
+			if s.Name == "smtp.deliver" {
+				n++
+			}
+		}
+		if n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	names := map[string]int{}
 	traces := map[string]bool{}
 	for _, s := range spans.GetSpans() {
