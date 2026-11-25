@@ -140,6 +140,38 @@ func TestDeliverFallsBackToNextMX(t *testing.T) {
 	}
 }
 
+// A 421 at MAIL is the server going away, not a verdict: the next MX gets the message.
+func TestDeliverTriesNextMXAfter421(t *testing.T) {
+	f := newFixture(t, true, twoMX)
+	f.sink.Busy.Store(1) // the first session (mx1) is turned away
+	res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org"))
+	if res[0].Status != Delivered || res[0].Host != "mx2.example.org" {
+		t.Errorf("result = %+v, want delivery via mx2", res[0])
+	}
+	if len(f.sink.Messages()) != 1 {
+		t.Errorf("sink got %d messages, want exactly 1", len(f.sink.Messages()))
+	}
+}
+
+// RFC 5321 4.5.3.1.10: 552 at RCPT means "too many recipients", so retry it later.
+func TestRcpt552IsTemporary(t *testing.T) {
+	f := newFixture(t, true, twoMX)
+	res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org", "full@example.org"))
+	if res[0].Status != Delivered || res[1].Status != Deferred || !strings.HasPrefix(res[1].Response, "552") {
+		t.Errorf("results = %+v", res)
+	}
+}
+
+func TestCancelledContextAbortsDelivery(t *testing.T) {
+	f := newFixture(t, true, twoMX)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := f.client.Deliver(ctx, testMsg, "example.org", rcpts("ok@example.org"))
+	if res[0].Status != Deferred || len(f.sink.Messages()) != 0 {
+		t.Errorf("result = %+v, messages = %d; a cancelled attempt must defer and send nothing", res[0], len(f.sink.Messages()))
+	}
+}
+
 func TestDeliverAllHostsDownIsTemporary(t *testing.T) {
 	f := newFixture(t, true, twoMX, "mx1.example.org", "mx2.example.org")
 	res := f.client.Deliver(context.Background(), testMsg, "example.org", rcpts("ok@example.org"))
@@ -224,6 +256,24 @@ func TestBuildDSN(t *testing.T) {
 	}
 	if strings.Contains(strings.ReplaceAll(dsn, "\r\n", ""), "\n") {
 		t.Error("DSN contains a bare LF")
+	}
+}
+
+func TestStatusOfReadsOnlyTheReplyPrefix(t *testing.T) {
+	for reply, want := range map[string]string{
+		"550 5.1.1 User unknown":                 "5.1.1",
+		"550-5.7.1 blocked":                      "5.7.1",
+		"4.4.7 message expired":                  "4.4.7",
+		"550 unavailable at 192.4.2.1":           "5.0.0", // an IP is not a status code
+		"554 rejected, see 5.7.1 in the policy":  "5.0.0",
+		"connect to mx.example.org: i/o timeout": "5.0.0",
+	} {
+		if got := statusOf(reply); got != want {
+			t.Errorf("statusOf(%q) = %q, want %q", reply, got, want)
+		}
+	}
+	if got := ascii("550 bo\u00eete pleine\t!"); got != "550 bo?te pleine?!" {
+		t.Errorf("ascii = %q", got)
 	}
 }
 

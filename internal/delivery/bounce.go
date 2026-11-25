@@ -17,14 +17,26 @@ type Failure struct {
 	Host     string // remote server, may be ""
 }
 
-var enhancedCode = regexp.MustCompile(`\b([245]\.\d{1,3}\.\d{1,3})\b`)
+// enhancedCode matches a status code at the start of a reply, after an
+// optional three-digit SMTP code. Anywhere else it could be part of an IP.
+var enhancedCode = regexp.MustCompile(`^(?:\d{3}[ -])?([45]\.\d{1,3}\.\d{1,3})(?:\s|$)`)
 
 // statusOf extracts the enhanced status code from a reply, or a generic one.
 func statusOf(response string) string {
-	if m := enhancedCode.FindString(response); m != "" && m[0] != '2' {
-		return m
+	if m := enhancedCode.FindStringSubmatch(response); m != nil {
+		return m[1]
 	}
 	return "5.0.0"
+}
+
+// ascii makes s safe for message/delivery-status, which must be 7bit.
+func ascii(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r > 126 || r < 32 {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 const maxReturnedHeaders = 32 << 10
@@ -81,7 +93,7 @@ func BuildDSN(hostname string, orig store.Message, failures []Failure, now time.
 		if f.Host != "" {
 			w("Remote-MTA: dns; %s", f.Host)
 		}
-		w("Diagnostic-Code: smtp; %s", f.Response)
+		w("Diagnostic-Code: smtp; %s", ascii(f.Response))
 	}
 	w("")
 
