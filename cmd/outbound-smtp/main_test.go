@@ -152,4 +152,41 @@ func TestDKIMCLI(t *testing.T) {
 	}
 	// Switching back to a named selector works the same way.
 	mustCLI(t, "", "dkim", "rotate", "example.com", "--selector", "one")
+
+	// send-test queues a signed message that the queue commands can inspect.
+	if _, _, code := cli(t, "", "send-test", "--from", "app@example.org", "--to", "rcpt@example.org"); code == 0 {
+		t.Error("send-test from an unconfigured domain must fail")
+	}
+	out = mustCLI(t, "", "send-test", "--from", "app@example.com", "--to", "rcpt@example.org")
+	id := strings.Fields(strings.TrimPrefix(out, "queued test message "))[0]
+	if list := mustCLI(t, "", "queue", "list"); !strings.Contains(list, id) || !strings.Contains(list, "rcpt@example.org") {
+		t.Errorf("queue list = %s", list)
+	}
+	if raw := mustCLI(t, "", "queue", "show", id, "--raw"); !strings.HasPrefix(raw, "DKIM-Signature:") || !strings.Contains(raw, "s=one;") {
+		t.Errorf("test message is not signed with the active selector:\n%s", raw)
+	}
+	mustCLI(t, "", "queue", "show", id)
+	mustCLI(t, "", "queue", "retry", id)
+	mustCLI(t, "", "queue", "delete", id)
+	if list := mustCLI(t, "", "queue", "list"); strings.Contains(list, id) {
+		t.Error("deleted message still listed")
+	}
+}
+
+func TestServeRefusesToStartUnconfigured(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	t.Setenv("SMTP_HOSTNAME", "")
+	if _, errOut, code := cli(t, "", "serve"); code == 0 || !strings.Contains(errOut, "SMTP_HOSTNAME") {
+		t.Errorf("serve without hostname: %q", errOut)
+	}
+	t.Setenv("SMTP_HOSTNAME", "relay.example.com")
+	t.Setenv("TLS_CERT_FILE", "")
+	if _, errOut, code := cli(t, "", "serve"); code == 0 || !strings.Contains(errOut, "TLS_CERT_FILE") {
+		t.Errorf("serve without certificate: %q", errOut)
+	}
+	t.Setenv("TLS_CERT_FILE", "/nonexistent/tls.crt")
+	t.Setenv("TLS_KEY_FILE", "/nonexistent/tls.key")
+	if _, errOut, code := cli(t, "", "serve"); code == 0 || !strings.Contains(errOut, "certificate") {
+		t.Errorf("serve with a missing certificate file: %q", errOut)
+	}
 }
