@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # "fix" so that dependency updates in the shipped binary and image produce a release.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      opentelemetry:
+        patterns: ["go.opentelemetry.io/*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: fix
+      include: scope
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
