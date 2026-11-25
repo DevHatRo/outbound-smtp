@@ -22,6 +22,7 @@ import (
 	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/go-acme/lego/v5/certificate"
 	"github.com/go-acme/lego/v5/challenge"
+	"github.com/go-acme/lego/v5/challenge/dns01"
 	"github.com/go-acme/lego/v5/challenge/http01"
 	"github.com/go-acme/lego/v5/lego"
 	"github.com/go-acme/lego/v5/providers/dns/cloudflare"
@@ -250,7 +251,13 @@ func (m *Manager) obtain(ctx context.Context) (certPEM, keyPEM []byte, err error
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := client.Challenge.SetDNS01Provider(p); err != nil {
+		var opts []dns01.ChallengeOption
+		if wait := m.cfg.ACMEDNSPropagationWait; wait > 0 {
+			// The default checks query the zone's authoritative servers
+			// directly, which networks that force a local resolver block.
+			opts = append(opts, dns01.PropagationWait(wait, true))
+		}
+		if err := client.Challenge.SetDNS01Provider(p, opts...); err != nil {
 			return nil, nil, err
 		}
 	}

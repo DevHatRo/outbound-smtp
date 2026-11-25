@@ -130,6 +130,7 @@ SQLite; CLI changes take effect without a restart.
 | `ACME_CHALLENGE` | `http` | `http` (HTTP-01) or `dns` (DNS-01). |
 | `ACME_HTTP_LISTEN` | `:80` | Where the HTTP-01 challenge is answered. Open only while a certificate is being issued. |
 | `ACME_DNS_PROVIDER` | *(unset)* | For DNS-01: `cloudflare`, `hetzner` or `cpanel`. |
+| `ACME_DNS_PROPAGATION_WAIT` | *(unset)* | For DNS-01: wait this long (for example `90s`) instead of checking propagation. Needed where outbound DNS is only allowed through the local resolver. |
 | `ACME_DIRECTORY_URL` | Let's Encrypt production | ACME directory. Use `https://acme-staging-v02.api.letsencrypt.org/directory` while testing. |
 | `DATA_DIR` | `/data` | Directory of the SQLite database (`relay.db`). |
 | `SMTP_ENABLE_PORT25` | `false` | Enable the plain SMTP listener for trusted networks. |
@@ -209,6 +210,11 @@ provider's credentials:
 | `cloudflare` | `CLOUDFLARE_DNS_API_TOKEN`: an API token with *Zone / DNS / Edit* on the zone (and *Zone / Zone / Read*). |
 | `hetzner` | `HETZNER_API_TOKEN`: a Hetzner Cloud API token (read and write) of the project that holds the DNS zone. |
 | `cpanel` | `CPANEL_USERNAME`, `CPANEL_TOKEN`, `CPANEL_BASE_URL` (for example `https://cpanel.example.com:2083`); `CPANEL_MODE=whm` for WHM. |
+
+Before asking for validation the relay checks that the record is visible on
+the zone's authoritative name servers. Networks that block outbound DNS
+except through their own resolver make that check time out; set
+`ACME_DNS_PROPAGATION_WAIT=90s` there to wait a fixed time instead.
 
 These tokens can change DNS for the zone. Scope them to the one zone, and
 prefer HTTP-01 when port 80 is available.

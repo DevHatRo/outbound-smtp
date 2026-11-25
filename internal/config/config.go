@@ -47,6 +47,10 @@ type Config struct {
 	ACMEHTTPListen   string   // ACME_HTTP_LISTEN
 	ACMEDNSProvider  string   // ACME_DNS_PROVIDER: cloudflare, hetzner or cpanel
 	ACMEDirectoryURL string   // ACME_DIRECTORY_URL
+	// ACMEDNSPropagationWait, when positive, replaces the DNS-01 propagation
+	// checks with a fixed wait. For networks that only allow DNS through the
+	// local resolver, where the authoritative servers cannot be queried.
+	ACMEDNSPropagationWait time.Duration // ACME_DNS_PROPAGATION_WAIT
 
 	MaxMessageSize int64         // MAX_MESSAGE_SIZE
 	MaxRecipients  int           // MAX_RECIPIENTS
@@ -116,6 +120,9 @@ func Load() (*Config, error) {
 		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
 			c.ACMEDomains = append(c.ACMEDomains, d)
 		}
+	}
+	if os.Getenv("ACME_DNS_PROPAGATION_WAIT") != "" {
+		c.ACMEDNSPropagationWait = l.duration("ACME_DNS_PROPAGATION_WAIT", 0)
 	}
 	if err := c.LogLevel.UnmarshalText([]byte(l.str("LOG_LEVEL", "info"))); err != nil {
 		l.fail("LOG_LEVEL", err)
