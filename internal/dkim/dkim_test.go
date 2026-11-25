@@ -120,8 +120,10 @@ func TestVerifyDNS(t *testing.T) {
 		want string // substring of the error, "" = success
 	}{
 		"exact":                {txt: []string{rec.Value}},
-		"split and reordered":  {txt: []string{"p=" + p[:100] + " " + p[100:] + " ; v=DKIM1"}}, // k defaults to rsa
-		"among other records":  {txt: []string{"v=spf1 -all", rec.Value}},
+		"split key, default k": {txt: []string{"v=DKIM1; p=" + p[:100] + " " + p[100:]}}, // k defaults to rsa
+		"among other records":  {txt: []string{"v=spf1 -all", rec.Value}, want: "exactly one"},
+		"wrong version":        {txt: []string{strings.Replace(rec.Value, "v=DKIM1", "v=DKIM2", 1)}, want: "v=DKIM1"},
+		"no version tag":       {txt: []string{strings.TrimPrefix(rec.Value, "v=DKIM1; ")}},
 		"different key":        {txt: []string{otherRec.Value}, want: "different key"},
 		"wrong algorithm":      {txt: []string{strings.Replace(rec.Value, "k=rsa", "k=ed25519", 1)}, want: "different key"},
 		"no dkim record":       {txt: []string{"v=spf1 -all"}, want: "no DKIM record"},
