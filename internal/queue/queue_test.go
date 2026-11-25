@@ -67,7 +67,10 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	e := &env{t: t, st: st, dl: &scripted{}, m: metrics.New("test"), now: time.Now()}
+	// The store stamps rows with the wall clock. Start the fake clock slightly
+	// ahead of it so a row queued during the test is always due, even when the
+	// wall-clock second ticks over mid-test.
+	e := &env{t: t, st: st, dl: &scripted{}, m: metrics.New("test"), now: time.Now().Add(2 * time.Second)}
 	cfg := &config.Config{Hostname: "relay.example.com", QueueMaxAge: 72 * time.Hour, DeliveryConcurrency: 4, DeliveryConcurrencyPerDomain: 2}
 	e.q = New(cfg, st, e.dl, markSigner{}, zap.NewNop(), e.m)
 	e.q.Now = func() time.Time { return e.now }
