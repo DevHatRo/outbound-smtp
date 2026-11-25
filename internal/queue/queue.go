@@ -274,10 +274,21 @@ func (q *Queue) attempt(g *group) {
 		span.AddEvent("recipient", trace.WithAttributes(attribute.String("smtprelay.result", res.Status.String()),
 			attribute.String("smtprelay.response", safe), attribute.String("server.address", res.Host),
 			attribute.Bool("smtprelay.tls", res.TLS)))
-		q.log.Info("delivery attempt",
+		// With LOG_RECIPIENTS the operator asked for addresses in the log, so
+		// the reply is kept as received too. Traces stay redacted either way.
+		logged := safe
+		if q.cfg.LogRecipients {
+			logged = res.Response
+		}
+		fields := []zap.Field{
 			zap.String("queue_id", msg.ID), zap.String("sender", msg.EnvelopeFrom), zap.String("recipient_domain", g.domain),
-			zap.String("result", res.Status.String()), zap.String("response", safe), zap.String("remote_host", res.Host),
-			zap.Bool("tls", res.TLS), zap.Int("attempt", r.Attempts+1), zap.String("trace_id", tracing.TraceID(ctx)))
+			zap.String("result", res.Status.String()), zap.String("response", logged), zap.String("remote_host", res.Host),
+			zap.Bool("tls", res.TLS), zap.Int("attempt", r.Attempts+1), zap.String("trace_id", tracing.TraceID(ctx)),
+		}
+		if q.cfg.LogRecipients {
+			fields = append(fields, zap.String("recipient", r.Address))
+		}
+		q.log.Info("delivery attempt", fields...)
 		switch res.Status {
 		case delivery.Delivered:
 			delivered++

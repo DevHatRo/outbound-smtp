@@ -74,6 +74,10 @@ type Config struct {
 	RateLimitNetworkPerHour int // RATE_LIMIT_NETWORK_PER_HOUR
 	AuthFailureLimit        int // AUTH_FAILURE_LIMIT (per IP per 10 minutes)
 
+	// LogRecipients adds full recipient addresses to the logs. Off by default:
+	// logs then carry the recipient domain only.
+	LogRecipients bool // LOG_RECIPIENTS
+
 	MetricsListen string        // METRICS_LISTEN
 	LogLevel      zapcore.Level // LOG_LEVEL
 }
@@ -119,6 +123,7 @@ func Load() (*Config, error) {
 		RateLimitNetworkPerHour: l.positive("RATE_LIMIT_NETWORK_PER_HOUR", 1000),
 		AuthFailureLimit:        l.positive("AUTH_FAILURE_LIMIT", 5),
 
+		LogRecipients: l.boolean("LOG_RECIPIENTS", false),
 		MetricsListen: l.str("METRICS_LISTEN", ":9090"),
 	}
 	for _, d := range strings.Split(l.str("ACME_DOMAINS", c.Hostname), ",") {
