@@ -102,6 +102,13 @@ func (q *Queue) Run(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
+		// Checked before every pass: select picks at random among ready cases,
+		// so a wake-up from a finishing attempt could otherwise start new
+		// deliveries after shutdown began.
+		if ctx.Err() != nil {
+			q.wg.Wait()
+			return
+		}
 		q.dispatch()
 		select {
 		case <-ctx.Done():

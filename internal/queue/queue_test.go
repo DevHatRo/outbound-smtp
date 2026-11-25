@@ -268,6 +268,21 @@ func TestNeverTriedMessageGetsOneAttemptEvenIfOld(t *testing.T) {
 	}
 }
 
+func TestNoNewDeliveriesAfterShutdownBegins(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue("Q1", "app@example.com", "ok@example.org")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A pending wake-up must not win against the cancelled context.
+	for range 50 {
+		e.q.Wake()
+		e.q.Run(ctx)
+	}
+	if e.dl.calls != 0 || len(e.recipients("Q1")) != 1 {
+		t.Errorf("started %d delivery attempt(s) after shutdown began", e.dl.calls)
+	}
+}
+
 func TestRunStopsAndLeavesQueueIntact(t *testing.T) {
 	e := newEnv(t)
 	e.enqueue("Q1", "app@example.com", "defer@example.org")
