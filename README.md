@@ -110,7 +110,8 @@ proxy, every external client can appear to come from the bridge gateway
 you have built an open relay. Check the `client_ip` field in the logs before
 adding a network, prefer host networking or authenticated users when in
 doubt, and never trust `172.16.0.0/12` or `192.168.0.0/16` wholesale.
-`network add` warns about these ranges and refuses anything broader than /8.
+`network add` warns about these ranges and refuses anything broader than /8
+for IPv4 or /32 for IPv6.
 
 ## Configuration
 

@@ -232,8 +232,15 @@ func parseCIDR(s string) (netip.Prefix, error) {
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("invalid CIDR %q", s)
 	}
-	if p.Bits() < 8 {
-		return netip.Prefix{}, fmt.Errorf("%s is too broad to trust: trusted networks relay without authentication (minimum prefix length is /8)", s)
+	// A /8 is already a large slice of IPv4; the same number of bits in IPv6
+	// would cover a 256th of the whole address space.
+	minBits, family := 8, "IPv4"
+	if p.Addr().Is6() && !p.Addr().Is4In6() {
+		minBits, family = 32, "IPv6"
+	}
+	if p.Bits() < minBits {
+		return netip.Prefix{}, fmt.Errorf("%s is too broad to trust: trusted networks relay without authentication (minimum prefix length is /%d for %s)",
+			s, minBits, family)
 	}
 	return p.Masked(), nil
 }

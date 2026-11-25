@@ -68,7 +68,7 @@ func TestAdminCLI(t *testing.T) {
 	if out := mustCLI(t, "", "network", "list"); !strings.Contains(out, "192.0.2.10/32") {
 		t.Errorf("network list = %q", out)
 	}
-	for _, broad := range []string{"0.0.0.0/0", "::/0", "128.0.0.0/1"} {
+	for _, broad := range []string{"0.0.0.0/0", "::/0", "128.0.0.0/1", "2000::/8", "2001::/16", "2001:db8::/31"} {
 		if _, errOut, code := cli(t, "", "network", "add", broad); code == 0 || !strings.Contains(errOut, "too broad") {
 			t.Errorf("network add %s must be refused: %q", broad, errOut)
 		}
@@ -77,6 +77,8 @@ func TestAdminCLI(t *testing.T) {
 		t.Errorf("Docker pool should warn: %q", errOut)
 	}
 	mustCLI(t, "", "network", "remove", "192.0.2.10/32")
+	mustCLI(t, "", "network", "add", "2001:db8::/32") // the narrowest IPv6 prefix refused is /31
+	mustCLI(t, "", "network", "remove", "2001:db8::/32")
 
 	mustCLI(t, "", "queue", "retry", "--all")
 	if _, _, code := cli(t, "", "queue", "retry"); code == 0 {
