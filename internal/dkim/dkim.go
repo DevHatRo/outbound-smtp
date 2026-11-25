@@ -17,7 +17,7 @@ import (
 
 	msgdkim "github.com/emersion/go-msgauth/dkim"
 
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // Key algorithms.

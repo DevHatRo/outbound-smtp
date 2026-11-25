@@ -31,7 +31,7 @@ import (
 	"github.com/go-acme/lego/v5/registration"
 	"go.uber.org/zap"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
 )
 
 // Manager keeps the certificate in DATA_DIR/acme valid.

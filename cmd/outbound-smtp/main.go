@@ -12,8 +12,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.commit=...".

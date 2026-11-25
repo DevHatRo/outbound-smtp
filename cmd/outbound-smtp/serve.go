@@ -19,15 +19,15 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/DevHatRO/outbound-smtp/internal/acmecert"
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/delivery"
-	"github.com/DevHatRO/outbound-smtp/internal/dkim"
-	"github.com/DevHatRO/outbound-smtp/internal/metrics"
-	"github.com/DevHatRO/outbound-smtp/internal/queue"
-	"github.com/DevHatRO/outbound-smtp/internal/smtpd"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
-	"github.com/DevHatRO/outbound-smtp/internal/tracing"
+	"github.com/DevHatRo/outbound-smtp/internal/acmecert"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/delivery"
+	"github.com/DevHatRo/outbound-smtp/internal/dkim"
+	"github.com/DevHatRo/outbound-smtp/internal/metrics"
+	"github.com/DevHatRo/outbound-smtp/internal/queue"
+	"github.com/DevHatRo/outbound-smtp/internal/smtpd"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/tracing"
 )
 
 // shutdownGrace is how long open SMTP sessions and in-flight deliveries get

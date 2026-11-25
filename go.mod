@@ -1,4 +1,4 @@
-module github.com/DevHatRO/outbound-smtp
+module github.com/DevHatRo/outbound-smtp
 
 go 1.27
 

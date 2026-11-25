@@ -16,10 +16,10 @@ import (
 	"github.com/emersion/go-smtp"
 	"go.uber.org/zap"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/metrics"
-	"github.com/DevHatRO/outbound-smtp/internal/password"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/metrics"
+	"github.com/DevHatRo/outbound-smtp/internal/password"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // Listener names, also used as the "listener" metric label.

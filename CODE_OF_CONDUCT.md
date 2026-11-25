@@ -20,7 +20,7 @@ If you experience or witness unacceptable behaviour:
 - use GitHub's **Report content** option on the comment, issue or pull
   request, or
 - contact the maintainers privately through
-  [Report a vulnerability](https://github.com/DevHatRO/outbound-smtp/security/advisories/new)
+  [Report a vulnerability](https://github.com/DevHatRo/outbound-smtp/security/advisories/new)
   and start the title with "Code of Conduct". This channel is only visible to
   the maintainers.
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // Failure is one recipient that will never be delivered.

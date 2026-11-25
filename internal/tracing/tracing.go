@@ -19,7 +19,7 @@ import (
 const Name = "outbound-smtp"
 
 // Tracer returns the relay's tracer; a no-op until Setup enables tracing.
-func Tracer() trace.Tracer { return otel.Tracer("github.com/DevHatRO/outbound-smtp") }
+func Tracer() trace.Tracer { return otel.Tracer("github.com/DevHatRo/outbound-smtp") }
 
 // Enabled reports whether an OTLP endpoint is configured.
 func Enabled() bool {

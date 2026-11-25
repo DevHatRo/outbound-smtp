@@ -15,8 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // Status is the outcome of one delivery attempt for one recipient.

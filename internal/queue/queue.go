@@ -14,11 +14,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/delivery"
-	"github.com/DevHatRO/outbound-smtp/internal/metrics"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
-	"github.com/DevHatRO/outbound-smtp/internal/tracing"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/delivery"
+	"github.com/DevHatRo/outbound-smtp/internal/metrics"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/tracing"
 )
 
 // Deliverer makes one delivery attempt for recipients sharing a domain.

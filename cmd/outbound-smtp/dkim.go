@@ -8,8 +8,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/DevHatRO/outbound-smtp/internal/dkim"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/dkim"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // lookupTXT is replaced in tests.

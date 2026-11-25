@@ -5,7 +5,7 @@
 Please report vulnerabilities **privately** through GitHub security
 advisories:
 
-1. Open the [Security tab](https://github.com/DevHatRO/outbound-smtp/security) of this repository.
+1. Open the [Security tab](https://github.com/DevHatRo/outbound-smtp/security) of this repository.
 2. Choose **Report a vulnerability**.
 3. Describe the issue, the affected version and how to reproduce it.
 

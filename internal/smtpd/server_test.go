@@ -17,11 +17,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/zap"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/metrics"
-	"github.com/DevHatRO/outbound-smtp/internal/password"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
-	certs "github.com/DevHatRO/outbound-smtp/internal/testutil"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/metrics"
+	"github.com/DevHatRo/outbound-smtp/internal/password"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
+	certs "github.com/DevHatRo/outbound-smtp/internal/testutil"
 )
 
 const (

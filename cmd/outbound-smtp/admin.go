@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/DevHatRO/outbound-smtp/internal/password"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/password"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 func when(unix int64) string {

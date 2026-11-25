@@ -1,7 +1,7 @@
 # outbound-smtp
 
-[![CI](https://github.com/DevHatRO/outbound-smtp/actions/workflows/ci.yml/badge.svg)](https://github.com/DevHatRO/outbound-smtp/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/DevHatRO/outbound-smtp?sort=semver)](https://github.com/DevHatRO/outbound-smtp/releases)
+[![CI](https://github.com/DevHatRo/outbound-smtp/actions/workflows/ci.yml/badge.svg)](https://github.com/DevHatRo/outbound-smtp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/DevHatRo/outbound-smtp?sort=semver)](https://github.com/DevHatRo/outbound-smtp/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A small outbound-only SMTP relay with DKIM signing. Applications and servers
@@ -475,7 +475,7 @@ workflow then:
 Verify an image's provenance with:
 
 ```sh
-gh attestation verify oci://ghcr.io/devhatro/outbound-smtp:latest --repo DevHatRO/outbound-smtp
+gh attestation verify oci://ghcr.io/devhatro/outbound-smtp:latest --repo DevHatRo/outbound-smtp
 ```
 
 ## Security

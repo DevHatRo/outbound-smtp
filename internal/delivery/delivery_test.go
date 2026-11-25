@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
-	"github.com/DevHatRO/outbound-smtp/internal/testutil"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/testutil"
 )
 
 type fakeDNS struct {

@@ -11,10 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/zap"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/delivery"
-	"github.com/DevHatRO/outbound-smtp/internal/metrics"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/delivery"
+	"github.com/DevHatRo/outbound-smtp/internal/metrics"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // scripted answers every recipient with the status its local part names.

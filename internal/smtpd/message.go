@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DevHatRO/outbound-smtp/internal/config"
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/config"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 // maxReceived is the hop count above which a message is treated as a loop.

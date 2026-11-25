@@ -9,7 +9,7 @@ import (
 
 	msgdkim "github.com/emersion/go-msgauth/dkim"
 
-	"github.com/DevHatRO/outbound-smtp/internal/store"
+	"github.com/DevHatRo/outbound-smtp/internal/store"
 )
 
 const message = "From: App <app@example.com>\r\nTo: rcpt@example.org\r\nSubject: hello\r\n" +

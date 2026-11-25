@@ -27,4 +27,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/DevHatRO/outbound-smtp
+        - github.com/DevHatRo/outbound-smtp
