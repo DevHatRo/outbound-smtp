@@ -60,7 +60,10 @@ func Verify(hash, pw string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	got := argon2.IDKey([]byte(pw), salt, t, m, p, uint32(len(want)))
+	if len(want) == 0 || len(want) > 1024 {
+		return false, errors.New("bad argon2 hash length")
+	}
+	got := argon2.IDKey([]byte(pw), salt, t, m, p, uint32(len(want))) //nolint:gosec // bounded just above
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 

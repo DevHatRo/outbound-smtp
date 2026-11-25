@@ -77,7 +77,7 @@ func New(cfg *config.Config, st *store.Store, dl Deliverer, signer Signer, log *
 		cfg: cfg, st: st, dl: dl, signer: signer, log: log, m: m,
 		Now: time.Now,
 		Jitter: func(d time.Duration) time.Duration { // +/-10% so retries do not synchronise
-			return d + time.Duration((rand.Float64()*0.2-0.1)*float64(d))
+			return d + time.Duration((rand.Float64()*0.2-0.1)*float64(d)) //nolint:gosec // jitter, not a secret
 		},
 		AttemptTimeout: 15 * time.Minute,
 		wake:           make(chan struct{}, 1),

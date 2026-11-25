@@ -275,7 +275,7 @@ func TestEndToEnd(t *testing.T) {
 		names[s.Name]++
 		traces[s.SpanContext.TraceID().String()] = true
 		for _, kv := range s.Attributes {
-			if v := kv.Value.Emit(); strings.Contains(v, "ok@") || strings.Contains(v, "bounce@") {
+			if v := kv.Value.String(); strings.Contains(v, "ok@") || strings.Contains(v, "bounce@") {
 				t.Errorf("span %s attribute %s exposes a recipient address: %s", s.Name, kv.Key, v)
 			}
 		}

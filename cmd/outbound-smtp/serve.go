@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"net/mail"
 	"os"
 	"os/signal"
@@ -133,6 +134,28 @@ func (a *app) serve() error {
 		log.Warn("flush traces", zap.Error(err))
 	}
 	log.Info("stopped")
+	return nil
+}
+
+// healthcheck asks the running daemon's /healthz; it is the container
+// HEALTHCHECK, so the image needs no curl or wget.
+func (a *app) healthcheck() error {
+	host, port, err := net.SplitHostPort(a.cfg.MetricsListen)
+	if err != nil {
+		return fmt.Errorf("METRICS_LISTEN: %w", err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz") //nolint:noctx // bounded by the client timeout
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck // nothing was read
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unhealthy: HTTP %d", resp.StatusCode)
+	}
 	return nil
 }
 

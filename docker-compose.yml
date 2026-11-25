@@ -1,0 +1,25 @@
+# Example deployment. Replace relay.example.com and the certificate paths.
+services:
+  outbound-smtp:
+    image: ghcr.io/devhatro/outbound-smtp:latest
+    restart: unless-stopped
+    environment:
+      SMTP_HOSTNAME: relay.example.com # must match the PTR record of the sending IP
+      TLS_CERT_FILE: /certs/fullchain.pem
+      TLS_KEY_FILE: /certs/privkey.pem
+      # SMTP_ENABLE_PORT25: "true"     # plain SMTP for trusted networks only
+    ports:
+      - "465:465"
+      - "587:587"
+      # - "25:25"
+      # /metrics and /healthz are unauthenticated: publish on loopback only.
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - outbound-smtp-data:/data
+      # The files must be readable by uid 10001.
+      - ./certs:/certs:ro
+    # Longer than the 30 s the daemon gives open sessions and deliveries.
+    stop_grace_period: 40s
+
+volumes:
+  outbound-smtp-data:

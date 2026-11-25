@@ -60,7 +60,7 @@ func Open(dataDir string) (*Store, error) {
 	path := filepath.Join(dataDir, "relay.db")
 	// Create with 0600 up front: the file holds DKIM private keys, and SQLite
 	// gives the -wal and -shm files the same mode as the main file.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // DATA_DIR is the operator's choice
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}

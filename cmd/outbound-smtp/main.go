@@ -27,6 +27,7 @@ const usage = `outbound-smtp - outbound-only SMTP relay with DKIM signing
 Usage:
   outbound-smtp serve
   outbound-smtp version
+  outbound-smtp healthcheck          (exit 0 if the running daemon answers /healthz)
   outbound-smtp domain  add|list|remove <domain>
   outbound-smtp dkim    generate|show|verify|rotate <domain> [--selector s] [--algorithm rsa|ed25519] [--force]
   outbound-smtp user    add|passwd <username> [--allow domain-or-address]... [--rate N] [--password-stdin|--generate]
@@ -78,8 +79,11 @@ func run(args []string, in io.Reader, out, errw io.Writer) int {
 }
 
 func (a *app) dispatch(cmd string, args []string) error {
-	if cmd == "serve" {
+	switch cmd {
+	case "serve":
 		return a.serve()
+	case "healthcheck":
+		return a.healthcheck()
 	}
 	st, err := store.Open(a.cfg.DataDir)
 	if err != nil {

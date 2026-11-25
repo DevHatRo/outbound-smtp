@@ -1,6 +1,6 @@
 module github.com/DevHatRO/outbound-smtp
 
-go 1.27.4
+go 1.27
 
 require (
 	github.com/emersion/go-msgauth v0.7.0

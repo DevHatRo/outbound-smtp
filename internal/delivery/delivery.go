@@ -198,7 +198,7 @@ func (c *Client) session(ctx context.Context, host, port string, smarthost, useT
 		switch {
 		case offered && useTLS:
 			if err := cl.StartTLS(tlsCfg); err != nil {
-				return nil, fmt.Errorf("%w with %s: %v", errTLS, host, err)
+				return nil, fmt.Errorf("%w with %s: %w", errTLS, host, err)
 			}
 		case withCreds:
 			return nil, fmt.Errorf("smarthost %s does not offer STARTTLS; refusing to send credentials in plaintext", host)

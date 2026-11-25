@@ -1,0 +1,11 @@
+.git
+.github
+dist
+data
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+*.md
+docker-compose.yml
