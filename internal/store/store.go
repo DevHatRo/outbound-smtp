@@ -555,7 +555,9 @@ func (s *Store) GetMessage(id string) (Message, error) {
 // message itself once no recipients remain.
 func (s *Store) RecipientDone(r Recipient) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&Recipient{}, r.ID).Error; err != nil {
+		// Matched on both columns: after "queue delete", SQLite can hand the
+		// same row ID to a recipient of a newer message.
+		if err := tx.Where("id = ? AND message_id = ?", r.ID, r.MessageID).Delete(&Recipient{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id = ? AND NOT EXISTS (SELECT 1 FROM recipients WHERE message_id = ?)", r.MessageID, r.MessageID).
@@ -564,8 +566,8 @@ func (s *Store) RecipientDone(r Recipient) error {
 }
 
 // RecipientDefer records a failed attempt and schedules the next one.
-func (s *Store) RecipientDefer(id int64, next time.Time, lastErr string) error {
-	return s.db.Model(&Recipient{}).Where("id = ?", id).Updates(map[string]any{
+func (s *Store) RecipientDefer(r Recipient, next time.Time, lastErr string) error {
+	return s.db.Model(&Recipient{}).Where("id = ? AND message_id = ?", r.ID, r.MessageID).Updates(map[string]any{
 		"state":           StateDeferred,
 		"attempts":        gorm.Expr("attempts + 1"),
 		"next_attempt_at": next.Unix(),

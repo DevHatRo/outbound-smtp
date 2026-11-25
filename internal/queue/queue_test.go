@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -42,11 +43,11 @@ func (s *scripted) Deliver(_ context.Context, _ store.Message, _ string, rcpts [
 	return out
 }
 
-type markSigner struct{ fail bool }
+type markSigner struct{ fail error }
 
 func (m markSigner) Sign(domain string, msg []byte) ([]byte, error) {
-	if m.fail {
-		return nil, errors.New("no key")
+	if m.fail != nil {
+		return nil, m.fail
 	}
 	return append([]byte("X-Signed-For: "+domain+"\r\n"), msg...), nil
 }
@@ -209,11 +210,79 @@ func TestBounceOfABounceIsDropped(t *testing.T) {
 
 func TestUnsignableBounceIsDroppedNotSentUnsigned(t *testing.T) {
 	e := newEnv(t)
-	e.q.signer = markSigner{fail: true}
+	e.q.signer = markSigner{fail: fmt.Errorf("active DKIM key for example.com: %w", store.ErrNotFound)}
 	e.enqueue("Q1", "app@example.com", "bounce@example.org")
 	e.pass()
 	if left := e.recipients(""); len(left) != 0 {
 		t.Fatalf("queue = %+v, want empty", left)
+	}
+}
+
+// A bounce that cannot be queued yet (here: a transient signing error) is
+// retried on its own. The rejected message is never sent to the remote again.
+func TestBounceIsRetriedWithoutRedelivering(t *testing.T) {
+	e := newEnv(t)
+	e.q.signer = markSigner{fail: errors.New("database is locked")}
+	e.enqueue("Q1", "app@example.com", "bounce@example.org")
+	e.pass()
+	left := e.recipients("Q1")
+	if len(left) != 1 || !strings.HasPrefix(left[0].LastError, bouncePending+"550 5.1.1") {
+		t.Fatalf("the verdict must stay with the recipient: %+v", left)
+	}
+	if e.dl.calls != 1 {
+		t.Fatalf("deliver calls = %d, want 1", e.dl.calls)
+	}
+
+	e.q.signer = markSigner{}
+	e.now = time.Unix(left[0].NextAttemptAt, 0)
+	e.pass()
+	if e.dl.calls != 1 {
+		t.Errorf("a permanently rejected message was offered to the remote again (%d calls)", e.dl.calls)
+	}
+	all := e.recipients("")
+	if len(all) != 1 || all[0].Address != "app@example.com" {
+		t.Fatalf("expected only the bounce in the queue, got %+v", all)
+	}
+	dsn, _ := e.st.GetMessage(all[0].MessageID)
+	if !strings.Contains(string(dsn.Body), "550 5.1.1 User unknown") || strings.Contains(string(dsn.Body), bouncePending) {
+		t.Errorf("bounce body:\n%s", dsn.Body)
+	}
+}
+
+func TestBounceThatNeverQueuesIsDroppedAtExpiry(t *testing.T) {
+	e := newEnv(t)
+	e.q.signer = markSigner{fail: errors.New("database is locked")}
+	e.enqueue("Q1", "app@example.com", "bounce@example.org")
+	e.pass()
+	e.now = e.now.Add(73 * time.Hour)
+	if err := e.st.RetryNow("Q1"); err != nil {
+		t.Fatal(err)
+	}
+	e.pass()
+	if left := e.recipients(""); len(left) != 0 {
+		t.Fatalf("an expired recipient must not be retried forever: %+v", left)
+	}
+}
+
+// A group admitted from a stale snapshot must not deliver again.
+func TestStaleSnapshotDoesNotRedeliver(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue("Q1", "app@example.com", "ok@example.org", "defer@example.org")
+	stale, _ := e.st.DueRecipients(e.now, 10) // what dispatch read before an earlier attempt finished
+	e.pass()
+	if e.dl.calls != 1 {
+		t.Fatalf("deliver calls = %d, want 1", e.dl.calls)
+	}
+	e.q.attempt(&group{messageID: "Q1", domain: "example.org", rcpts: stale})
+	if e.dl.calls != 1 {
+		t.Errorf("stale snapshot caused %d extra delivery call(s)", e.dl.calls-1)
+	}
+}
+
+func TestRedactRecipientFromRemoteReply(t *testing.T) {
+	got := redact("550 5.1.1 <Rcpt@Example.org>: user unknown", "rcpt@example.org")
+	if got != "550 5.1.1 <[recipient]>: user unknown" {
+		t.Errorf("redact = %q", got)
 	}
 }
 
@@ -228,7 +297,7 @@ func TestExpiredMessageBounces(t *testing.T) {
 		t.Fatal(err)
 	}
 	// RetryNow stamps wall-clock time; move the row to the fake clock.
-	if err := e.st.RecipientDefer(e.recipients("Q1")[0].ID, e.now, "451 4.2.0 Try again later"); err != nil {
+	if err := e.st.RecipientDefer(e.recipients("Q1")[0], e.now, "451 4.2.0 Try again later"); err != nil {
 		t.Fatal(err)
 	}
 	e.pass()
